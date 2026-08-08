@@ -1,0 +1,6 @@
+(fp_lib_table
+	(version 7)
+	(lib (name "din5-socket") (type "KiCad") (uri "${KIPRJMOD}/components/din5-socket.pretty") (options "") (descr ""))
+	(lib (name "vga") (type "KiCad") (uri "${KIPRJMOD}/components/vga.pretty") (options "") (descr ""))
+	(lib (name "din6-socket") (type "KiCad") (uri "${KIPRJMOD}/components/din6-socket.pretty") (options "") (descr ""))
+)

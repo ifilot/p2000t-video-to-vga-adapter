@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: 2026 Ivo Filot <ivo@ivofilot.nl>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# KiCad project-local/user state
+*.kicad_prl
+fp-info-cache
+
+# KiCad autosaves and backups
+_autosave-*
+*.bak
+*.bck
+*.kicad_sch-bak
+*.kicad_pcb-bak
+*-backups/
+
+# Generated fabrication/output files
+gerbers/
+gerber/
+fab/
+fabrication/
+production/
+outputs/
+*.gbr
+*.gbrjob
+*.drl
+*.pos
+*.rpt
+*.net
+*.lck
+
+# SPICE/simulation output
+*.raw
+*.log
+
+# Operating system cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+pcb/.history
+
+# Firmware build output
+build/
+build-gui/
+cmake-build-*/
+.ci-dependencies/
