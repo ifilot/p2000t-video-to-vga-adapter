@@ -11,10 +11,11 @@
 ;
 ; Clock and packing contract:
 ;   The state machine runs at 126 MHz from the 252 MHz RP2040 clock divided by
-;   two. Each 6 MHz source dot occupies exactly 21 PIO cycles. Three samples
-;   are taken at ticks 9, 11, and 13 around the dot centre and
-;   majority-decoded by C. Two dots produce 24 useful bits in each left-shifted
-;   DMA word. A 300-dot raw window permits any 240-dot sub-window to be chosen.
+;   two. Each 6 MHz source dot occupies exactly 21 PIO cycles. Five samples
+;   are taken at ticks 7, 9, 11, 13, and 15. One dot produces 20 useful bits
+;   in each left-shifted DMA word. C independently chooses an early, centre,
+;   or late three-sample majority window for each RGB channel. A 300-dot raw
+;   window permits any 240-dot sub-window to be chosen.
 ;
 ; TX command contract for each frame:
 ;   1. 239: capture 240 visible lines using the Y decrementing loop.
@@ -47,11 +48,10 @@ vertical_end:
     ; command is first_visible_scanline - 1 because JMP X-- loops N+1 times.
     pull block
     mov x, osr
-skip_wait_active:
-    jmp pin skip_got_edge
-    jmp skip_wait_active
 skip_wait_idle:
     jmp pin skip_wait_idle
+skip_wait_active:
+    jmp pin skip_got_edge
     jmp skip_wait_active
 skip_got_edge:
     jmp x-- skip_wait_idle
@@ -70,17 +70,17 @@ phase_delay_loop:
     pull block
     mov x, osr                     ; 299: extended raw-dot loop count
 sample_dot:
-    nop [8]                        ; advance toward this source dot's centre
-    in pins, 4 [1]                 ; early:  tick 9
-    in pins, 4 [1]                 ; centre: tick 11
-    in pins, 4                     ; late:   tick 13
-    jmp x-- sample_dot [6]         ; next dot begins at tick 21
+    nop [6]                        ; advance toward this source dot's centre
+    in pins, 4 [1]                 ; sample 0: tick 7
+    in pins, 4 [1]                 ; sample 1: tick 9
+    in pins, 4 [1]                 ; sample 2: tick 11
+    in pins, 4 [1]                 ; sample 3: tick 13
+    in pins, 4                     ; sample 4: tick 15
+    jmp x-- sample_dot [4]         ; next dot begins at tick 21
 
-    jmp y-- next_line_wait_idle
+    jmp y-- next_line_wait_active
 .wrap
 
-next_line_wait_idle:
-    jmp pin next_line_wait_idle
 next_line_wait_active:
     jmp pin line_start_delay
     jmp next_line_wait_active

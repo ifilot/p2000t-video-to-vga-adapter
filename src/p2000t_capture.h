@@ -23,6 +23,9 @@ enum {
     P2000T_CAPTURE_BYTES_PER_FRAME =
         P2000T_CAPTURE_WORDS_PER_FRAME * sizeof(uint32_t),
     P2000T_QUALITY_BIN_COUNT = 12,
+    P2000T_RGB_CHANNEL_COUNT = 3,
+    P2000T_TAP_WINDOW_COUNT = 3,
+    P2000T_DEFAULT_TAP_WINDOW = 1,
     P2000T_DEFAULT_FIRST_VISIBLE_SCANLINE = 57,
     P2000T_MIN_FIRST_VISIBLE_SCANLINE = 1,
     P2000T_MAX_FIRST_VISIBLE_SCANLINE = 73,
@@ -72,6 +75,10 @@ typedef struct {
     uint64_t quality_centre_late_differences;
     uint64_t quality_centre_outliers;
     uint64_t quality_bin_disagreements[P2000T_QUALITY_BIN_COUNT];
+    uint64_t quality_channel_window_disagreements
+        [P2000T_RGB_CHANNEL_COUNT][P2000T_TAP_WINDOW_COUNT];
+    uint8_t channel_tap_windows[P2000T_RGB_CHANNEL_COUNT];
+    bool quality_measurement_enabled;
     bool signal_present;
 } p2000t_capture_stats_t;
 
@@ -98,6 +105,14 @@ bool p2000t_capture_set_first_visible_scanline(unsigned scanline);
 
 /** Trim the dot-centre sampling phase in 7.94 ns capture ticks. */
 bool p2000t_capture_set_sample_phase(int phase);
+
+/** Select the early, centre, or late majority window for each RGB channel. */
+bool p2000t_capture_set_channel_tap_windows(unsigned red,
+                                            unsigned green,
+                                            unsigned blue);
+
+/** Enable or disable expensive sparse eye-quality measurements. */
+void p2000t_capture_set_quality_measurement(bool enabled);
 
 /** Select a later 240-dot window within the extended raw line capture. */
 bool p2000t_capture_set_horizontal_offset(unsigned pixels);
