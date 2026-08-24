@@ -1,0 +1,86 @@
+; SPDX-FileCopyrightText: 2026 Ivo Filot <ivo@ivofilot.nl>
+; SPDX-License-Identifier: GPL-3.0-or-later
+;
+; @file p2000t_capture.pio
+; @brief Frame- and line-locked capture of conditioned P2000T RGBS.
+;
+; Pin contract:
+;   IN base covers GP16..GP19; each IN stores one four-bit RGBS sample.
+;   JMP pin is configured at runtime to the mapped conditioned CSYNC input.
+;   Conditioned CSYNC is active high; conditioned RGB is active low.
+;
+; Clock and packing contract:
+;   The state machine runs at 126 MHz from the 252 MHz RP2040 clock divided by
+;   two. Each 6 MHz source dot occupies exactly 21 PIO cycles. Three samples
+;   are taken at ticks 9, 11, and 13 around the dot centre and
+;   majority-decoded by C. Two dots produce 24 useful bits in each left-shifted
+;   DMA word. A 300-dot raw window permits any 240-dot sub-window to be chosen.
+;
+; TX command contract for each frame:
+;   1. 239: capture 240 visible lines using the Y decrementing loop.
+;   2. first visible scanline minus one.
+;   3. For each visible line: phase delay count, then 299 for 300 raw dots.
+
+.program p2000t_capture
+
+.wrap_target
+    pull block
+    mov y, osr                     ; 239: visible-line loop count
+
+    ; Find a CSYNC active interval longer than 6 us. Normal horizontal pulses
+    ; last approximately 4.5 us and return to the search loop. Entering during
+    ; an ordinary pulse merely rejects that shortened candidate.
+find_vertical_start:
+    jmp pin vertical_candidate
+    jmp find_vertical_start
+vertical_candidate:
+    set x, 31
+vertical_measure:
+    jmp pin vertical_continue
+    jmp find_vertical_start        ; pulse ended before the threshold
+vertical_continue:
+    jmp x-- vertical_measure [23]  ; 32 x 25 cycles = 6.35 us
+vertical_end:
+    jmp pin vertical_end
+
+    ; Count normal line-sync leading edges to the first display scanline. The
+    ; command is first_visible_scanline - 1 because JMP X-- loops N+1 times.
+    pull block
+    mov x, osr
+skip_wait_active:
+    jmp pin skip_got_edge
+    jmp skip_wait_active
+skip_wait_idle:
+    jmp pin skip_wait_idle
+    jmp skip_wait_active
+skip_got_edge:
+    jmp x-- skip_wait_idle
+
+    ; Anchor the raw window about 9.063 us after the CSYNC leading edge. The
+    ; phase command uses a one-cycle loop: nominal 111 produces the calibrated
+    ; start, and every manual trim step moves sampling by one 126 MHz tick.
+line_start_delay:
+    set x, 31
+line_delay_loop:
+    jmp x-- line_delay_loop [31]   ; 1024 cycles
+    pull block
+    mov x, osr                     ; adjustable remainder, nominal 111
+phase_delay_loop:
+    jmp x-- phase_delay_loop
+    pull block
+    mov x, osr                     ; 299: extended raw-dot loop count
+sample_dot:
+    nop [8]                        ; advance toward this source dot's centre
+    in pins, 4 [1]                 ; early:  tick 9
+    in pins, 4 [1]                 ; centre: tick 11
+    in pins, 4                     ; late:   tick 13
+    jmp x-- sample_dot [6]         ; next dot begins at tick 21
+
+    jmp y-- next_line_wait_idle
+.wrap
+
+next_line_wait_idle:
+    jmp pin next_line_wait_idle
+next_line_wait_active:
+    jmp pin line_start_delay
+    jmp next_line_wait_active
