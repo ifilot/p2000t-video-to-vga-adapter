@@ -1,7 +1,16 @@
 # P2000T video-to-VGA adapter
 
+[![Build firmware](https://github.com/ifilot/p2000t-video-to-vga-adapter/actions/workflows/build.yml/badge.svg)](https://github.com/ifilot/p2000t-video-to-vga-adapter/actions/workflows/build.yml)
+[![License](https://img.shields.io/badge/license-GPL--3.0--or--later%20%2F%20CERN--OHL--S--2.0-blue.svg)](#license)
+[![Latest release](https://img.shields.io/github/v/release/ifilot/p2000t-video-to-vga-adapter?label=version)](https://github.com/ifilot/p2000t-video-to-vga-adapter/releases/latest)
+
 Hardware and firmware for converting the Philips P2000T RGBS output to
 640×480 VGA using a Raspberry Pi Pico or Pico 2.
+
+## Downloads
+
+- [Latest Pico firmware](https://github.com/ifilot/p2000t-video-to-vga-adapter/releases/latest/download/p2000t-vid2vga-pico.uf2)
+- [Latest Pico 2 firmware](https://github.com/ifilot/p2000t-video-to-vga-adapter/releases/latest/download/p2000t-vid2vga-pico2.uf2)
 
 ## Features
 
@@ -12,24 +21,6 @@ Hardware and firmware for converting the Philips P2000T RGBS output to
 - On-screen signal-loss status
 - USB serial controls and capture statistics
 - Pico and experimental Pico 2 builds
-
-## Connections
-
-The PCB conditions the P2000T signals before they reach the Pico. Do not treat
-the GPIO mapping below as a replacement for the input-conditioning circuit.
-
-| Signal | Prototype v1, default | Corrected PCB v2 |
-|---|---:|---:|
-| CSYNC input | GP17 | GP16 |
-| Red input | GP16 | GP17 |
-| Green input | GP19 | GP18 |
-| Blue input | GP18 | GP19 |
-| VGA RGB444 | GP0–GP11 | GP0–GP11 |
-| VGA HSYNC | GP12 | GP12 |
-| VGA VSYNC | GP13 | GP13 |
-
-Set `P2000T_PROTOTYPE_V1_MIRRORED_DIN=OFF` when building for the corrected
-PCB mapping.
 
 ## Building
 
@@ -50,8 +41,9 @@ cmake --build cmake-build-pico2 --parallel
 ```
 
 The UF2 file is written below the build directory at
-`src/p2000t-vid2vga-firmware.uf2`. GitHub Actions also publishes separate
-Pico and Pico 2 build artifacts.
+`src/p2000t-vid2vga-firmware.uf2`. GitHub Actions publishes separate Pico and
+Pico 2 build artifacts. Pushing a tag creates a GitHub Release containing both
+UF2 files under stable, version-independent filenames.
 
 Both boards currently run at 252 MHz and 1.30 V to obtain exact 126 MHz
 capture and 25.2 MHz VGA clocks. The Pico 2 configuration compiles but remains
@@ -62,13 +54,6 @@ an experimental overclock requiring hardware testing.
 Connect to the Pico USB serial port and press `h` for help. Useful commands are
 `s` for status, `[`/`]` for vertical position, `,`/`.` for sample phase, and
 `<`/`>` for horizontal position. Phase 0 is the default.
-
-## Project layout
-
-- `src/` — Pico firmware and PIO capture program
-- `pcb/` — KiCad hardware design
-- `screentest/` — P2000T SAA5050 test cartridge
-- `.github/workflows/` — Pico and Pico 2 CI builds
 
 ## License
 

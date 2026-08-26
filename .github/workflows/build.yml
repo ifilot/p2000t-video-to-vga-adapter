@@ -56,13 +56,45 @@ jobs:
       - name: Build ${{ matrix.board }}
         run: cmake --build build/${{ matrix.board }} --parallel
 
+      - name: Prepare ${{ matrix.board }} artifacts
+        run: |
+          mkdir -p dist
+          for extension in uf2 elf bin hex; do
+            cp "build/${{ matrix.board }}/src/p2000t-vid2vga-firmware.${extension}" \
+              "dist/p2000t-vid2vga-${{ matrix.board }}.${extension}"
+          done
+
       - name: Upload ${{ matrix.board }} firmware
         uses: actions/upload-artifact@v4
         with:
           name: p2000t-vid2vga-${{ matrix.board }}
           if-no-files-found: error
-          path: |
-            build/${{ matrix.board }}/src/p2000t-vid2vga-firmware.uf2
-            build/${{ matrix.board }}/src/p2000t-vid2vga-firmware.elf
-            build/${{ matrix.board }}/src/p2000t-vid2vga-firmware.bin
-            build/${{ matrix.board }}/src/p2000t-vid2vga-firmware.hex
+          path: dist/*
+
+  release:
+    name: Create GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Pico and Pico 2 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: p2000t-vid2vga-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish tagged release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: >-
+          gh release create "${GITHUB_REF_NAME}"
+          dist/p2000t-vid2vga-pico.uf2
+          dist/p2000t-vid2vga-pico2.uf2
+          --verify-tag
+          --generate-notes
+          --latest

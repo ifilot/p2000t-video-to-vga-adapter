@@ -8,6 +8,8 @@ Notable project changes are recorded here.
 
 - P2000M-style signal-loss status screen.
 - GitHub Actions builds and downloadable artifacts for Pico and Pico 2.
+- Automatic GitHub Releases with stable Pico and Pico 2 UF2 filenames when a
+  tag is pushed.
 - Pico 2 RP2350 build support using the experimental 252 MHz clock setup.
 
 ### Changed
