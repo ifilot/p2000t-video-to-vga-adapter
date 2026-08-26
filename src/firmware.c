@@ -10,8 +10,10 @@
 
 #include <inttypes.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "hardware/clocks.h"
 #include "hardware/vreg.h"
@@ -22,9 +24,19 @@
 #include "pico/stdio_usb.h"
 #include "pico/stdlib.h"
 
-#if !defined(PICO_RP2040) || !PICO_RP2040
-#error "The P2000T VGA firmware must be built for an RP2040 Pico 1"
+#if defined(PICO_RP2040) && PICO_RP2040
+#define P2000T_PROCESSOR_NAME "RP2040 / Pico 1"
+#elif defined(PICO_RP2350) && PICO_RP2350
+#define P2000T_PROCESSOR_NAME "RP2350 / Pico 2"
+#else
+#error "The P2000T VGA firmware supports only Pico and Pico 2"
 #endif
+
+static const char signal_lost_product[] = "P2000T VID2VGA";
+static const char signal_lost_message[] = "SIGNAL LOST";
+static const char signal_lost_firmware[] =
+    "FIRMWARE v" P2000T_VID2VGA_VERSION;
+static const char signal_lost_waiting[] = "WAITING FOR CSYNC";
 
 enum {
     SYSTEM_CLOCK_KHZ = 252000,
@@ -41,6 +53,19 @@ enum {
     RAW_SCANLINE_TOKENS = (3 + VGA_RENDER_WIDTH - 1) + 2 + 2,
     RAW_SCANLINE_WORDS = RAW_SCANLINE_TOKENS / 2,
     VGA_READY_MAGIC = 0x56474154,
+    SIGNAL_LOST_GLYPH_WIDTH = 5,
+    SIGNAL_LOST_GLYPH_HEIGHT = 7,
+    SIGNAL_LOST_FONT_GLYPHS = 36,
+    SIGNAL_LOST_PANEL_LEFT = 90,
+    SIGNAL_LOST_PANEL_RIGHT = 550,
+    SIGNAL_LOST_PANEL_TOP = 70,
+    SIGNAL_LOST_PANEL_BOTTOM = 170,
+    SIGNAL_LOST_PANEL_BORDER_X = 3,
+    SIGNAL_LOST_PANEL_BORDER_Y = 2,
+    SIGNAL_LOST_PRODUCT_TOP = 82,
+    SIGNAL_LOST_MESSAGE_TOP = 100,
+    SIGNAL_LOST_FIRMWARE_TOP = 127,
+    SIGNAL_LOST_WAITING_TOP = 147,
 };
 
 _Static_assert(VGA_RENDER_WIDTH * VGA_HORIZONTAL_SCALE == VGA_TIMING_WIDTH,
@@ -98,7 +123,7 @@ static bool displayed_signal_present;
 static volatile uint32_t generated_vga_frames;
 static volatile uint32_t source_frame_swaps;
 static volatile uint32_t repeated_vga_frames;
-static volatile uint32_t test_pattern_frames;
+static volatile uint32_t signal_lost_frames;
 static volatile uint32_t vga_scanline_id_gaps;
 static uint32_t previous_scanline_id;
 static bool have_previous_scanline_id;
@@ -129,34 +154,132 @@ static void finish_raw_scanline(scanvideo_scanline_buffer_t *scanline_buffer,
     scanline_buffer->status = SCANLINE_OK;
 }
 
-/** Draw eight cheap color runs while waiting for credible source lock. */
-static void render_test_pattern(
-    scanvideo_scanline_buffer_t *scanline_buffer, unsigned y) {
-    uint16_t *tokens = (uint16_t *)scanline_buffer->data;
-    unsigned token = 0;
-    const bool border = y < 2u || y >= VGA_RENDER_HEIGHT - 2u;
-    if (border) {
-        tokens[token++] = COMPOSABLE_COLOR_RUN;
-        tokens[token++] = source_colors[7];
-        tokens[token++] = (VGA_RENDER_WIDTH - 1u) - 3u;
-    } else {
-        for (unsigned bar = 0; bar < 8u; ++bar) {
-            tokens[token++] = COMPOSABLE_COLOR_RUN;
-            tokens[token++] = source_colors[bar];
-            /* Leave the last logical pixel black to prevent blanking bleed. */
-            tokens[token++] = (bar == 7u ? 79u : 80u) - 3u;
+/** Five-bit rows for uppercase letters A-Z followed by digits 0-9. */
+static const uint8_t signal_lost_font
+    [SIGNAL_LOST_FONT_GLYPHS][SIGNAL_LOST_GLYPH_HEIGHT] = {
+    {0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11}, // A
+    {0x1e, 0x11, 0x11, 0x1e, 0x11, 0x11, 0x1e}, // B
+    {0x0e, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0e}, // C
+    {0x1e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1e}, // D
+    {0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f}, // E
+    {0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10}, // F
+    {0x0e, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0e}, // G
+    {0x11, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11}, // H
+    {0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1f}, // I
+    {0x07, 0x02, 0x02, 0x02, 0x12, 0x12, 0x0c}, // J
+    {0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11}, // K
+    {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f}, // L
+    {0x11, 0x1b, 0x15, 0x15, 0x11, 0x11, 0x11}, // M
+    {0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11}, // N
+    {0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e}, // O
+    {0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10, 0x10}, // P
+    {0x0e, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0d}, // Q
+    {0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11}, // R
+    {0x0e, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e}, // S
+    {0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04}, // T
+    {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e}, // U
+    {0x11, 0x11, 0x11, 0x11, 0x11, 0x0a, 0x04}, // V
+    {0x11, 0x11, 0x11, 0x15, 0x15, 0x1b, 0x11}, // W
+    {0x11, 0x0a, 0x04, 0x04, 0x04, 0x0a, 0x11}, // X
+    {0x11, 0x0a, 0x04, 0x04, 0x04, 0x04, 0x04}, // Y
+    {0x1f, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1f}, // Z
+    {0x0e, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0e}, // 0
+    {0x04, 0x0c, 0x04, 0x04, 0x04, 0x04, 0x0e}, // 1
+    {0x0e, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1f}, // 2
+    {0x1e, 0x01, 0x01, 0x0e, 0x01, 0x01, 0x1e}, // 3
+    {0x02, 0x06, 0x0a, 0x12, 0x1f, 0x02, 0x02}, // 4
+    {0x1f, 0x10, 0x10, 0x1e, 0x01, 0x01, 0x1e}, // 5
+    {0x0e, 0x10, 0x10, 0x1e, 0x11, 0x11, 0x0e}, // 6
+    {0x1f, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08}, // 7
+    {0x0e, 0x11, 0x11, 0x0e, 0x11, 0x11, 0x0e}, // 8
+    {0x0e, 0x11, 0x11, 0x0f, 0x01, 0x01, 0x0e}, // 9
+};
+
+static uint8_t signal_lost_glyph_row(char character, unsigned row) {
+    if (character >= 'a' && character <= 'z') {
+        character = (char)(character - 'a' + 'A');
+    }
+    if (character >= 'A' && character <= 'Z') {
+        return signal_lost_font[(unsigned)(character - 'A')][row];
+    }
+    if (character >= '0' && character <= '9') {
+        return signal_lost_font[26u + (unsigned)(character - '0')][row];
+    }
+    return character == '.' && row == 6u ? 0x04u : 0x00u;
+}
+
+static void render_signal_lost_text(uint16_t *tokens, unsigned y,
+                                    const char *message, unsigned top,
+                                    unsigned x_scale, unsigned y_scale,
+                                    uint16_t color) {
+    if (y < top || y >= top + SIGNAL_LOST_GLYPH_HEIGHT * y_scale) {
+        return;
+    }
+    const size_t length = strlen(message);
+    const unsigned text_width = (unsigned)(
+        ((SIGNAL_LOST_GLYPH_WIDTH + 1u) * length - 1u) * x_scale);
+    const unsigned text_left = (VGA_RENDER_WIDTH - text_width) / 2u;
+    const unsigned font_row = (y - top) / y_scale;
+    for (size_t index = 0; index < length; ++index) {
+        const unsigned character_x = text_left + (unsigned)index *
+            (SIGNAL_LOST_GLYPH_WIDTH + 1u) * x_scale;
+        const uint8_t row = signal_lost_glyph_row(message[index], font_row);
+        for (unsigned column = 0; column < SIGNAL_LOST_GLYPH_WIDTH; ++column) {
+            if ((row & (0x10u >> column)) == 0u) {
+                continue;
+            }
+            const unsigned pixel_x = character_x + column * x_scale;
+            for (unsigned offset = 0; offset < x_scale; ++offset) {
+                tokens[pixel_x + offset + 2u] = color;
+            }
         }
     }
-    tokens[token++] = COMPOSABLE_RAW_1P;
-    tokens[token++] = 0x0000;
-    if ((token & 1u) == 0u) {
-        tokens[token++] = COMPOSABLE_EOL_SKIP_ALIGN;
-        tokens[token++] = 0;
-    } else {
-        tokens[token++] = COMPOSABLE_EOL_ALIGN;
+}
+
+/** Draw a status card matching the P2000M adapter while CSYNC is absent. */
+static void render_signal_lost_scanline(
+    scanvideo_scanline_buffer_t *scanline_buffer, unsigned y) {
+    const uint16_t canvas = 0x0000;
+    const uint16_t panel = 0x0221;
+    const uint16_t alert = 0x033e;
+    const uint16_t text = 0x0fff;
+    uint16_t *tokens = (uint16_t *)scanline_buffer->data;
+    tokens[0] = COMPOSABLE_RAW_RUN;
+    tokens[1] = canvas;
+    tokens[2] = VGA_RENDER_WIDTH - 3;
+    for (unsigned x = 1; x < VGA_RENDER_WIDTH; ++x) {
+        tokens[x + 2u] = canvas;
     }
-    scanline_buffer->data_used = (token + 1u) / 2u;
-    scanline_buffer->status = SCANLINE_OK;
+
+    const bool panel_line = y >= SIGNAL_LOST_PANEL_TOP &&
+                            y < SIGNAL_LOST_PANEL_BOTTOM;
+    const bool horizontal_border = panel_line &&
+        (y < SIGNAL_LOST_PANEL_TOP + SIGNAL_LOST_PANEL_BORDER_Y ||
+         y >= SIGNAL_LOST_PANEL_BOTTOM - SIGNAL_LOST_PANEL_BORDER_Y);
+    if (panel_line) {
+        const uint16_t fill = horizontal_border ? alert : panel;
+        for (unsigned x = SIGNAL_LOST_PANEL_LEFT;
+             x < SIGNAL_LOST_PANEL_RIGHT; ++x) {
+            tokens[x + 2u] = fill;
+        }
+        if (!horizontal_border) {
+            for (unsigned offset = 0; offset < SIGNAL_LOST_PANEL_BORDER_X;
+                 ++offset) {
+                tokens[SIGNAL_LOST_PANEL_LEFT + offset + 2u] = alert;
+                tokens[SIGNAL_LOST_PANEL_RIGHT - offset + 1u] = alert;
+            }
+        }
+    }
+
+    render_signal_lost_text(tokens, y, signal_lost_product,
+                            SIGNAL_LOST_PRODUCT_TOP, 2, 1, text);
+    render_signal_lost_text(tokens, y, signal_lost_message,
+                            SIGNAL_LOST_MESSAGE_TOP, 4, 2, text);
+    render_signal_lost_text(tokens, y, signal_lost_firmware,
+                            SIGNAL_LOST_FIRMWARE_TOP, 2, 1, text);
+    render_signal_lost_text(tokens, y, signal_lost_waiting,
+                            SIGNAL_LOST_WAITING_TOP, 2, 1, text);
+    finish_raw_scanline(scanline_buffer, tokens);
 }
 
 /** Draw one 480-sample source line centered in the 640-pixel VGA line. */
@@ -205,7 +328,7 @@ static void select_frame_for_next_vga_frame(void) {
             ++repeated_vga_frames;
         }
         if (!displayed_signal_present) {
-            ++test_pattern_frames;
+            ++signal_lost_frames;
         }
         return;
     }
@@ -243,7 +366,7 @@ static void render_scanline(scanvideo_scanline_buffer_t *scanline_buffer) {
         select_frame_for_next_vga_frame();
     }
     if (!displayed_signal_present || displayed_buffer < 0) {
-        render_test_pattern(scanline_buffer, y);
+        render_signal_lost_scanline(scanline_buffer, y);
         return;
     }
     render_source_scanline(scanline_buffer, y);
@@ -269,8 +392,8 @@ static void print_status(void) {
         __atomic_load_n(&source_frame_swaps, __ATOMIC_RELAXED);
     const uint32_t repeats =
         __atomic_load_n(&repeated_vga_frames, __ATOMIC_RELAXED);
-    const uint32_t tests =
-        __atomic_load_n(&test_pattern_frames, __ATOMIC_RELAXED);
+    const uint32_t lost =
+        __atomic_load_n(&signal_lost_frames, __ATOMIC_RELAXED);
     const uint32_t id_gaps =
         __atomic_load_n(&vga_scanline_id_gaps, __ATOMIC_RELAXED);
     const uint32_t sequence =
@@ -292,13 +415,13 @@ static void print_status(void) {
     printf(" first_line=%" PRIu32 " h_offset=%" PRIu32
            " phase=%" PRId32 " stale=%" PRIu32
            " vga=%" PRIu32 " swaps=%" PRIu32
-           " repeats=%" PRIu32 " test=%" PRIu32
+           " repeats=%" PRIu32 " lost=%" PRIu32
            " id_gaps=%" PRIu32 " displayed=%" PRIu32 "\n",
            capture.first_visible_scanline,
            capture.horizontal_offset,
            capture.sample_phase,
            capture.stale_frames_replaced,
-           vga_frames, swaps, repeats, tests, id_gaps, sequence);
+           vga_frames, swaps, repeats, lost, id_gaps, sequence);
 }
 
 static void print_help(void) {
@@ -395,12 +518,12 @@ static void poll_usb_commands(void) {
 }
 
 int main(void) {
-    /* Experimental Pico 1 overclock. The 252 MHz clock is a common multiple
-       of the 6 MHz P2000T dot clock and the 25.2 MHz VGA pixel clock. */
+    /* Experimental overclock on both supported boards. The 252 MHz clock is
+       a common multiple of the 6 MHz source and 25.2 MHz VGA pixel clocks. */
     vreg_set_voltage(VREG_VOLTAGE_1_30);
     sleep_us(1000u);
     if (!set_sys_clock_khz(SYSTEM_CLOCK_KHZ, true)) {
-        panic("Unable to set the experimental 252 MHz Pico 1 system clock");
+        panic("Unable to set the experimental 252 MHz system clock");
     }
     stdio_init_all();
     build_input_color_lookup();
@@ -426,8 +549,8 @@ int main(void) {
         }
         if (!announced) {
             sleep_ms(100);
-            printf("\nP2000T VID2VGA firmware v%s -- RP2040 / Pico 1\n",
-                   P2000T_VID2VGA_VERSION);
+            printf("\nP2000T VID2VGA firmware v%s -- %s\n",
+                   P2000T_VID2VGA_VERSION, P2000T_PROCESSOR_NAME);
             printf("Input: CSYNC=GP%u R=GP%u G=GP%u B=GP%u; "
                    "VGA: RGB=GP0-GP11 HSYNC=GP12 VSYNC=GP13\n",
                    P2000T_SYNC_PIN, P2000T_RED_PIN,

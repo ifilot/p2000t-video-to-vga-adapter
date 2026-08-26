@@ -13,11 +13,11 @@ licensed under the CERN Open Hardware Licence Version 2—Strongly Reciprocal
 
 You may redistribute and modify the design, and make or distribute products
 based on it, subject to the terms of that license. The complete license text is
-in [`../LICENSES/CERN-OHL-S-2.0.txt`](../LICENSES/CERN-OHL-S-2.0.txt).
+available from the CERN Open Hardware Licence project.
 
 The permanent source location is:
 
-<https://github.com/ifilot/p2000m-video-to-vga-adapter>
+<https://github.com/ifilot/p2000t-video-to-vga-adapter>
 
 The preferred source for modification consists of the KiCad project files and
 custom footprints in this directory. This source and any products made from it

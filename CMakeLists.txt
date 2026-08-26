@@ -3,10 +3,12 @@
 
 cmake_minimum_required(VERSION 3.13)
 
-# This project intentionally supports the original RP2040 Pico only. FORCE
-# prevents a cached Pico 2 selection from silently changing the target.
-set(PICO_BOARD "pico" CACHE STRING "Target Raspberry Pi Pico board" FORCE)
-set(PICO_PLATFORM "rp2040" CACHE STRING "Target Raspberry Pi platform" FORCE)
+# Default to the original Pico while allowing a separate build directory to
+# select Pico 2 with -DPICO_BOARD=pico2. The SDK derives PICO_PLATFORM from the
+# selected board.
+if(NOT DEFINED PICO_BOARD)
+    set(PICO_BOARD "pico" CACHE STRING "Target Raspberry Pi Pico board")
+endif()
 
 # Prefer an explicit SDK location, then the standard environment variable. The
 # /opt fallback is convenient for the repository's current development setup.
