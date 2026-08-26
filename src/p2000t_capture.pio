@@ -56,12 +56,10 @@ skip_wait_active:
 skip_got_edge:
     jmp x-- skip_wait_idle
 
-    ; Anchor sampling to CSYNC. The command includes coarse source-dot offset
-    ; and fine one-tick phase adjustment in addition to the nominal delay.
+    ; Anchor sampling to CSYNC. One combined programmable loop includes the
+    ; former fixed 1024-cycle delay, coarse source-dot offset, fine phase, and
+    ; compensation for the qualified-edge delay below.
 line_start_delay:
-    set x, 31
-line_delay_loop:
-    jmp x-- line_delay_loop [31]   ; 1024 cycles
     pull block
     mov x, osr
 phase_delay_loop:
@@ -81,6 +79,19 @@ sample_source_dot:
     jmp y-- next_line_wait_active
 .wrap
 
+    ; Sampling finishes about 7 us before the next expected horizontal sync.
+    ; Ignore the first 4.1 us (SET plus 16 x 32-cycle loop iterations), then
+    ; require a candidate pulse to remain active for another 33 PIO clocks
+    ; (about 0.26 us). This rejects early or very narrow CSYNC glitches while
+    ; retaining ample margin for the normal approximately 4.5 us pulse.
 next_line_wait_active:
+    set x, 15
+horizontal_sync_holdoff:
+    jmp x-- horizontal_sync_holdoff [31]
+horizontal_sync_wait_active:
+    jmp pin horizontal_sync_candidate
+    jmp horizontal_sync_wait_active
+horizontal_sync_candidate:
+    nop [31]
     jmp pin line_start_delay
-    jmp next_line_wait_active
+    jmp horizontal_sync_wait_active

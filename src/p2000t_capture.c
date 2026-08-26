@@ -30,6 +30,13 @@ enum {
     FRAME_LINE_COUNT = P2000T_CAPTURE_HEIGHT - 1,
     SOURCE_DOT_LOOP_COUNT = P2000T_CAPTURE_WIDTH / 2 - 1,
     CAPTURE_TICKS_PER_SOURCE_DOT = 21,
+    /* The former fixed 1024-cycle PIO loop plus its SET instruction are
+       folded into the programmable delay loop to make room for horizontal
+       sync gating. */
+    COMBINED_DELAY_COUNT_BIAS = 1025,
+    /* NOP [31] followed by the confirming JMP PIN delays acceptance by 33
+       PIO clocks. Subtract it so pixel sampling retains its original phase. */
+    HORIZONTAL_SYNC_QUALIFICATION_TICKS = 33,
     NOMINAL_PHASE_DELAY_COUNT = 111,
     MINIMUM_FRAME_PERIOD_US = 19000,
     MAXIMUM_FRAME_PERIOD_US = 21200,
@@ -84,12 +91,16 @@ static bool timing_is_locked(uint64_t now, uint64_t last_frame_time,
 static void update_tx_commands(void) {
     tx_commands[0] = FRAME_LINE_COUNT;
     tx_commands[1] = first_visible_scanline - 1u;
-    const uint32_t start_delay = (uint32_t)(
-        NOMINAL_PHASE_DELAY_COUNT +
+    const uint32_t qualified_start_delay = (uint32_t)(
+        COMBINED_DELAY_COUNT_BIAS + NOMINAL_PHASE_DELAY_COUNT -
+        HORIZONTAL_SYNC_QUALIFICATION_TICKS +
         (int)horizontal_offset * CAPTURE_TICKS_PER_SOURCE_DOT +
         sample_phase);
     for (unsigned line = 0; line < P2000T_CAPTURE_HEIGHT; ++line) {
-        tx_commands[2u + line * 2u] = start_delay;
+        /* The first visible line arrives through the initial sync-counting
+           path and therefore has not incurred the qualified-edge delay. */
+        tx_commands[2u + line * 2u] = qualified_start_delay +
+            (line == 0u ? HORIZONTAL_SYNC_QUALIFICATION_TICKS : 0u);
         tx_commands[3u + line * 2u] = SOURCE_DOT_LOOP_COUNT;
     }
 }
