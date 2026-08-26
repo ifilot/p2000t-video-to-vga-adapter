@@ -2,7 +2,7 @@
 ; SPDX-License-Identifier: GPL-3.0-or-later
 ;
 ; @file p2000t_capture.pio
-; @brief Frame- and line-locked capture of conditioned P2000T RGBS.
+; @brief Frame- and line-locked 12 MHz sampling of conditioned P2000T RGBS.
 ;
 ; Pin contract:
 ;   IN base covers GP16..GP19; each IN stores one four-bit RGBS sample.
@@ -11,16 +11,16 @@
 ;
 ; Clock and packing contract:
 ;   The state machine runs at 126 MHz from the 252 MHz RP2040 clock divided by
-;   two. Each 6 MHz source dot occupies exactly 21 PIO cycles. Five samples
-;   are taken at ticks 7, 9, 11, 13, and 15. One dot produces 20 useful bits
-;   in each left-shifted DMA word. C independently chooses an early, centre,
-;   or late three-sample majority window for each RGB channel. A 300-dot raw
-;   window permits any 240-dot sub-window to be chosen.
+;   two. Each nominal 6 MHz source dot occupies 21 PIO cycles. The sample loop
+;   takes two samples in those 21 cycles, alternating 10- and 11-cycle sample
+;   intervals. Eight chronological four-bit samples auto-push one DMA word.
+;   No pixel reconstruction or majority vote is performed.
 ;
 ; TX command contract for each frame:
 ;   1. 239: capture 240 visible lines using the Y decrementing loop.
 ;   2. first visible scanline minus one.
-;   3. For each visible line: phase delay count, then 299 for 300 raw dots.
+;   3. For each visible line: horizontal start delay, then 239 as the loop
+;      count for 240 source dots and therefore 480 raw samples.
 
 .program p2000t_capture
 
@@ -56,27 +56,27 @@ skip_wait_active:
 skip_got_edge:
     jmp x-- skip_wait_idle
 
-    ; Anchor the raw window about 9.063 us after the CSYNC leading edge. The
-    ; phase command uses a one-cycle loop: nominal 111 produces the calibrated
-    ; start, and every manual trim step moves sampling by one 126 MHz tick.
+    ; Anchor sampling to CSYNC. The command includes coarse source-dot offset
+    ; and fine one-tick phase adjustment in addition to the nominal delay.
 line_start_delay:
     set x, 31
 line_delay_loop:
     jmp x-- line_delay_loop [31]   ; 1024 cycles
     pull block
-    mov x, osr                     ; adjustable remainder, nominal 111
+    mov x, osr
 phase_delay_loop:
     jmp x-- phase_delay_loop
     pull block
-    mov x, osr                     ; 299: extended raw-dot loop count
-sample_dot:
-    nop [6]                        ; advance toward this source dot's centre
-    in pins, 4 [1]                 ; sample 0: tick 7
-    in pins, 4 [1]                 ; sample 1: tick 9
-    in pins, 4 [1]                 ; sample 2: tick 11
-    in pins, 4 [1]                 ; sample 3: tick 13
-    in pins, 4                     ; sample 4: tick 15
-    jmp x-- sample_dot [4]         ; next dot begins at tick 21
+    mov x, osr                     ; 239: source-dot pair loop count
+
+    ; One loop is 21 ticks. Samples land at ticks 6 and 16 before the global
+    ; phase adjustment, so consecutive intervals alternate between 10 and 11
+    ; ticks and the average sampling rate is exactly 12 MHz.
+sample_source_dot:
+    nop [5]
+    in pins, 4 [9]                 ; first half-dot sample: tick 6
+    in pins, 4 [3]                 ; second half-dot sample: tick 16
+    jmp x-- sample_source_dot
 
     jmp y-- next_line_wait_active
 .wrap

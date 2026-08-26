@@ -31,9 +31,9 @@ enum {
     SYSTEM_CORE_VOLTAGE_MV = 1300,
     VGA_TIMING_WIDTH = 640,
     VGA_TIMING_HEIGHT = 480,
-    VGA_RENDER_WIDTH = 320,
+    VGA_RENDER_WIDTH = 640,
     VGA_RENDER_HEIGHT = 240,
-    VGA_HORIZONTAL_SCALE = 2,
+    VGA_HORIZONTAL_SCALE = 1,
     VGA_VERTICAL_SCALE = 2,
     VGA_LEFT_MARGIN = (VGA_RENDER_WIDTH - P2000T_CAPTURE_WIDTH) / 2,
     VGA_RIGHT_MARGIN =
@@ -41,25 +41,19 @@ enum {
     RAW_SCANLINE_TOKENS = (3 + VGA_RENDER_WIDTH - 1) + 2 + 2,
     RAW_SCANLINE_WORDS = RAW_SCANLINE_TOKENS / 2,
     VGA_READY_MAGIC = 0x56474154,
-    EYE_SCAN_FIRST_PHASE = P2000T_MIN_SAMPLE_PHASE,
-    EYE_SCAN_PHASE_COUNT =
-        P2000T_MAX_SAMPLE_PHASE - P2000T_MIN_SAMPLE_PHASE + 1,
-    EYE_SCAN_FRAMES_PER_PHASE = 32,
 };
 
 _Static_assert(VGA_RENDER_WIDTH * VGA_HORIZONTAL_SCALE == VGA_TIMING_WIDTH,
-               "Scanvideo must double 320 logical pixels to 640 VGA pixels");
+               "Scanvideo must render all 640 VGA pixels directly");
 _Static_assert(VGA_RENDER_HEIGHT * VGA_VERTICAL_SCALE == VGA_TIMING_HEIGHT,
-               "Scanvideo must double 240 logical lines to 480 VGA lines");
-_Static_assert(VGA_LEFT_MARGIN == 40 && VGA_RIGHT_MARGIN == 40,
-               "The native source image must be centered before 2x scaling");
+               "Each captured source line must produce two VGA lines");
+_Static_assert(VGA_LEFT_MARGIN == 80 && VGA_RIGHT_MARGIN == 80,
+               "The 480-sample source image must be centered in VGA");
 _Static_assert((unsigned)P2000T_CAPTURE_HEIGHT ==
                    (unsigned)VGA_RENDER_HEIGHT,
                "Each source line must map to one logical scanvideo line");
-_Static_assert(RAW_SCANLINE_WORDS == 163,
+_Static_assert(RAW_SCANLINE_WORDS == 323,
                "CMake scanvideo storage must match the raw line renderer");
-_Static_assert(P2000T_CAPTURE_WIDTH % P2000T_QUALITY_BIN_COUNT == 0,
-               "Signal-quality bins must have equal horizontal widths");
 
 /** Standard 640x480, nominal 60 Hz VGA at a 25.2 MHz pixel clock. */
 static const scanvideo_timing_t vga_timing_640x480_60 = {
@@ -109,19 +103,6 @@ static volatile uint32_t vga_scanline_id_gaps;
 static uint32_t previous_scanline_id;
 static bool have_previous_scanline_id;
 
-typedef struct {
-    bool active;
-    int original_phase;
-    unsigned phase_index;
-    uint32_t rates_ppm[EYE_SCAN_PHASE_COUNT];
-    uint32_t bin_rates_ppm[EYE_SCAN_PHASE_COUNT]
-                               [P2000T_QUALITY_BIN_COUNT];
-    uint32_t channel_window_rates_ppm[EYE_SCAN_PHASE_COUNT]
-        [P2000T_RGB_CHANNEL_COUNT][P2000T_TAP_WINDOW_COUNT];
-} eye_scan_state_t;
-
-static eye_scan_state_t eye_scan;
-
 static void build_input_color_lookup(void) {
     uint16_t raw_nibble_colors[16];
     for (unsigned raw = 0; raw < 16u; ++raw) {
@@ -163,7 +144,7 @@ static void render_test_pattern(
             tokens[token++] = COMPOSABLE_COLOR_RUN;
             tokens[token++] = source_colors[bar];
             /* Leave the last logical pixel black to prevent blanking bleed. */
-            tokens[token++] = (bar == 7u ? 39u : 40u) - 3u;
+            tokens[token++] = (bar == 7u ? 79u : 80u) - 3u;
         }
     }
     tokens[token++] = COMPOSABLE_RAW_1P;
@@ -178,7 +159,7 @@ static void render_test_pattern(
     scanline_buffer->status = SCANLINE_OK;
 }
 
-/** Draw one source line doubled horizontally and centered in the VGA line. */
+/** Draw one 480-sample source line centered in the 640-pixel VGA line. */
 static void render_source_scanline(
     scanvideo_scanline_buffer_t *scanline_buffer, unsigned source_y) {
     uint16_t *tokens = (uint16_t *)scanline_buffer->data;
@@ -279,78 +260,6 @@ static void __not_in_flash_func(vga_core_main)(void) {
     }
 }
 
-/** Express RGB-channel disagreements per million observed channel triplets. */
-static uint32_t quality_rate_ppm(uint64_t differences,
-                                 uint64_t triplets) {
-    const uint64_t observations = triplets * 3u;
-    if (observations == 0u) {
-        return 0u;
-    }
-    return (uint32_t)((differences * 1000000u + observations / 2u) /
-                      observations);
-}
-
-/** Express one RGB channel's disagreements per million sample triplets. */
-static uint32_t channel_quality_rate_ppm(uint64_t differences,
-                                         uint64_t triplets) {
-    if (triplets == 0u) {
-        return 0u;
-    }
-    return (uint32_t)((differences * 1000000u + triplets / 2u) /
-                      triplets);
-}
-
-static int tap_window_offset(unsigned window) {
-    return (int)window * 2 - 2;
-}
-
-/** Choose the middle of the widest region close to the lowest observed rate. */
-static int select_quiet_eye_center(const uint32_t *rates,
-                                   unsigned count,
-                                   int first_phase,
-                                   int reference_phase,
-                                   uint32_t *minimum_rate,
-                                   uint32_t *quiet_threshold) {
-    uint32_t minimum = UINT32_MAX;
-    for (unsigned i = 0; i < count; ++i) {
-        if (rates[i] < minimum) {
-            minimum = rates[i];
-        }
-    }
-    const uint32_t threshold = minimum + minimum / 4u + 5u;
-    unsigned best_start = 0;
-    unsigned best_length = 0;
-    unsigned run_start = 0;
-    unsigned run_length = 0;
-    int best_distance = INT32_MAX;
-    for (unsigned i = 0; i <= count; ++i) {
-        if (i < count && rates[i] <= threshold) {
-            if (run_length == 0u) {
-                run_start = i;
-            }
-            ++run_length;
-            continue;
-        }
-        if (run_length != 0u) {
-            const int center = first_phase +
-                (int)(run_start + run_length / 2u);
-            const int distance = center >= reference_phase
-                ? center - reference_phase
-                : reference_phase - center;
-            if (run_length > best_length ||
-                (run_length == best_length && distance < best_distance)) {
-                best_start = run_start;
-                best_length = run_length;
-                best_distance = distance;
-            }
-        }
-        run_length = 0;
-    }
-    *minimum_rate = minimum;
-    *quiet_threshold = threshold;
-    return first_phase + (int)(best_start + best_length / 2u);
-}
-
 static void print_status(void) {
     p2000t_capture_stats_t capture;
     p2000t_capture_get_stats(&capture);
@@ -380,279 +289,23 @@ static void print_status(void) {
                rate_millihz / 1000u,
                rate_millihz % 1000u);
     }
-    /* The first majority vote is centred eleven PIO ticks after the raw-dot
-       loop starts. Each source dot is exactly 21 ticks at 126 MHz. */
-    const int32_t pixel_zero_ticks =
-        1142 + (int32_t)capture.horizontal_offset * 21 + 11 +
-        capture.sample_phase;
-    const uint32_t pixel_zero_ns =
-        (uint32_t)pixel_zero_ticks * 1000u / 126u;
     printf(" first_line=%" PRIu32 " h_offset=%" PRIu32
-           " phase=%" PRId32 " measured=%" PRId32
-           " pixel0=%" PRIu32 ".%03" PRIu32 "us"
-           " line_max=%" PRIu32 "us stale=%" PRIu32
+           " phase=%" PRId32 " stale=%" PRIu32
            " vga=%" PRIu32 " swaps=%" PRIu32
            " repeats=%" PRIu32 " test=%" PRIu32
            " id_gaps=%" PRIu32 " displayed=%" PRIu32 "\n",
            capture.first_visible_scanline,
            capture.horizontal_offset,
            capture.sample_phase,
-           capture.measured_phase,
-           pixel_zero_ns / 1000u,
-           pixel_zero_ns % 1000u,
-           capture.maximum_line_decode_us,
            capture.stale_frames_replaced,
            vga_frames, swaps, repeats, tests, id_gaps, sequence);
-    if (!capture.quality_measurement_enabled) {
-        printf("RGB_QUALITY disabled taps=R%+d/G%+d/B%+d; "
-               "press a to calibrate\n",
-               tap_window_offset(capture.channel_tap_windows[0]),
-               tap_window_offset(capture.channel_tap_windows[1]),
-               tap_window_offset(capture.channel_tap_windows[2]));
-        return;
-    }
-    printf("RGB_QUALITY frames=%" PRIu32
-           " disagree=%" PRIu32 "ppm early/centre=%" PRIu32
-           "ppm centre/late=%" PRIu32 "ppm centre_spikes=%" PRIu32
-           "ppm taps=R%+d/G%+d/B%+d\n",
-           capture.quality_frames,
-           quality_rate_ppm(capture.quality_disagreements,
-                            capture.quality_triplets),
-           quality_rate_ppm(capture.quality_early_centre_differences,
-                            capture.quality_triplets),
-           quality_rate_ppm(capture.quality_centre_late_differences,
-                            capture.quality_triplets),
-           quality_rate_ppm(capture.quality_centre_outliers,
-                            capture.quality_triplets),
-           tap_window_offset(capture.channel_tap_windows[0]),
-           tap_window_offset(capture.channel_tap_windows[1]),
-           tap_window_offset(capture.channel_tap_windows[2]));
-    printf("RGB_WINDOWS R=");
-    for (unsigned channel = 0; channel < P2000T_RGB_CHANNEL_COUNT;
-         ++channel) {
-        if (channel != 0u) {
-            printf(" %c=", channel == 1u ? 'G' : 'B');
-        }
-        for (unsigned window = 0; window < P2000T_TAP_WINDOW_COUNT;
-             ++window) {
-            printf("%s%" PRIu32, window == 0u ? "" : "/",
-                   channel_quality_rate_ppm(
-                       capture.quality_channel_window_disagreements
-                           [channel][window],
-                       capture.quality_triplets));
-        }
-    }
-    printf("ppm (-2/0/+2 ticks)\n");
-}
-
-static void start_eye_scan(void) {
-    p2000t_capture_stats_t capture;
-    p2000t_capture_get_stats(&capture);
-    if (!capture.signal_present) {
-        printf("Eye scan requires a locked P2000T signal.\n");
-        return;
-    }
-    eye_scan = (eye_scan_state_t) {
-        .active = true,
-        .original_phase = capture.sample_phase,
-        .phase_index = 0,
-    };
-    (void)p2000t_capture_set_channel_tap_windows(
-        P2000T_DEFAULT_TAP_WINDOW,
-        P2000T_DEFAULT_TAP_WINDOW,
-        P2000T_DEFAULT_TAP_WINDOW);
-    p2000t_capture_set_quality_measurement(true);
-    (void)p2000t_capture_set_sample_phase(EYE_SCAN_FIRST_PHASE);
-    printf("EYE scan started: phases %+d through %+d, %u frames each "
-           "(~28 seconds). VGA lock may drop during measurement.\n",
-           EYE_SCAN_FIRST_PHASE, P2000T_MAX_SAMPLE_PHASE,
-           EYE_SCAN_FRAMES_PER_PHASE);
-}
-
-static void cancel_eye_scan(void) {
-    if (eye_scan.active) {
-        eye_scan.active = false;
-        p2000t_capture_set_quality_measurement(false);
-        printf("EYE scan cancelled by manual phase adjustment.\n");
-    }
-}
-
-static unsigned select_channel_tap_window(const uint32_t *rates,
-                                          unsigned preferred) {
-    uint32_t minimum = UINT32_MAX;
-    for (unsigned window = 0; window < P2000T_TAP_WINDOW_COUNT; ++window) {
-        if (rates[window] < minimum) {
-            minimum = rates[window];
-        }
-    }
-    const uint32_t threshold = minimum + minimum / 4u + 5u;
-    unsigned selected = preferred;
-    unsigned selected_distance = P2000T_TAP_WINDOW_COUNT;
-    for (unsigned window = 0; window < P2000T_TAP_WINDOW_COUNT; ++window) {
-        if (rates[window] > threshold) {
-            continue;
-        }
-        const unsigned distance = window >= preferred
-            ? window - preferred
-            : preferred - window;
-        if (distance < selected_distance) {
-            selected = window;
-            selected_distance = distance;
-        }
-    }
-    return selected;
-}
-
-static void finish_eye_scan(void) {
-    uint32_t minimum;
-    uint32_t threshold;
-    int selected = select_quiet_eye_center(
-        eye_scan.rates_ppm, EYE_SCAN_PHASE_COUNT, EYE_SCAN_FIRST_PHASE,
-        eye_scan.original_phase, &minimum, &threshold);
-    uint32_t maximum = 0;
-    for (unsigned phase = 0; phase < EYE_SCAN_PHASE_COUNT; ++phase) {
-        if (eye_scan.rates_ppm[phase] > maximum) {
-            maximum = eye_scan.rates_ppm[phase];
-        }
-    }
-    if (maximum <= threshold) {
-        selected = eye_scan.original_phase;
-    }
-
-    printf("EYE horizontal centres:");
-    for (unsigned bin = 0; bin < P2000T_QUALITY_BIN_COUNT; ++bin) {
-        uint32_t bin_rates[EYE_SCAN_PHASE_COUNT];
-        for (unsigned phase = 0; phase < EYE_SCAN_PHASE_COUNT; ++phase) {
-            bin_rates[phase] = eye_scan.bin_rates_ppm[phase][bin];
-        }
-        uint32_t bin_minimum;
-        uint32_t bin_threshold;
-        const int bin_center = select_quiet_eye_center(
-            bin_rates, EYE_SCAN_PHASE_COUNT, EYE_SCAN_FIRST_PHASE,
-            selected, &bin_minimum, &bin_threshold);
-        printf(" %+d", bin_center);
-    }
-    printf("\n");
-
-    int channel_centres[P2000T_RGB_CHANNEL_COUNT];
-    unsigned channel_windows[P2000T_RGB_CHANNEL_COUNT];
-    const unsigned selected_index =
-        (unsigned)(selected - EYE_SCAN_FIRST_PHASE);
-    printf("EYE channel centres:");
-    for (unsigned channel = 0; channel < P2000T_RGB_CHANNEL_COUNT;
-         ++channel) {
-        uint32_t channel_rates[EYE_SCAN_PHASE_COUNT];
-        for (unsigned phase = 0; phase < EYE_SCAN_PHASE_COUNT; ++phase) {
-            channel_rates[phase] =
-                eye_scan.channel_window_rates_ppm[phase][channel]
-                                                  [P2000T_DEFAULT_TAP_WINDOW];
-        }
-        uint32_t channel_minimum;
-        uint32_t channel_threshold;
-        channel_centres[channel] = select_quiet_eye_center(
-            channel_rates, EYE_SCAN_PHASE_COUNT, EYE_SCAN_FIRST_PHASE,
-            selected, &channel_minimum, &channel_threshold);
-        uint32_t channel_maximum = 0;
-        for (unsigned phase = 0; phase < EYE_SCAN_PHASE_COUNT; ++phase) {
-            if (channel_rates[phase] > channel_maximum) {
-                channel_maximum = channel_rates[phase];
-            }
-        }
-        if (channel_maximum <= channel_threshold) {
-            channel_centres[channel] = selected;
-        }
-        const int delta = channel_centres[channel] - selected;
-        const unsigned preferred = delta < -1 ? 0u : (delta > 1 ? 2u : 1u);
-        channel_windows[channel] = select_channel_tap_window(
-            eye_scan.channel_window_rates_ppm[selected_index][channel],
-            preferred);
-        printf(" %c=%+d", channel == 0u ? 'R' :
-                            (channel == 1u ? 'G' : 'B'),
-               channel_centres[channel]);
-    }
-    printf("; taps R%+d/G%+d/B%+d ticks\n",
-           tap_window_offset(channel_windows[0]),
-           tap_window_offset(channel_windows[1]),
-           tap_window_offset(channel_windows[2]));
-    printf("EYE selected phase=%+d; quiet threshold=%" PRIu32
-           "ppm, minimum=%" PRIu32 "ppm. Horizontal centres should be "
-           "roughly level.\n",
-           selected, threshold, minimum);
-    eye_scan.active = false;
-    (void)p2000t_capture_set_sample_phase(selected);
-    (void)p2000t_capture_set_channel_tap_windows(
-        channel_windows[0], channel_windows[1], channel_windows[2]);
-    p2000t_capture_set_quality_measurement(false);
-}
-
-static void poll_eye_scan(void) {
-    if (!eye_scan.active) {
-        return;
-    }
-    p2000t_capture_stats_t capture;
-    p2000t_capture_get_stats(&capture);
-    const int candidate =
-        EYE_SCAN_FIRST_PHASE + (int)eye_scan.phase_index;
-    if (capture.measured_phase != candidate ||
-        capture.quality_frames < EYE_SCAN_FRAMES_PER_PHASE) {
-        return;
-    }
-
-    const uint32_t rate = quality_rate_ppm(
-        capture.quality_disagreements, capture.quality_triplets);
-    eye_scan.rates_ppm[eye_scan.phase_index] = rate;
-    const uint64_t bin_triplets =
-        capture.quality_triplets / P2000T_QUALITY_BIN_COUNT;
-    printf("EYE phase=%+d frames=%" PRIu32 " total=%" PRIu32
-           "ppm bins=",
-           candidate, capture.quality_frames, rate);
-    for (unsigned bin = 0; bin < P2000T_QUALITY_BIN_COUNT; ++bin) {
-        const uint32_t bin_rate = quality_rate_ppm(
-            capture.quality_bin_disagreements[bin], bin_triplets);
-        eye_scan.bin_rates_ppm[eye_scan.phase_index][bin] = bin_rate;
-        printf("%s%" PRIu32, bin == 0u ? "" : ",", bin_rate);
-    }
-    printf(" early/centre=%" PRIu32 "ppm centre/late=%" PRIu32
-           "ppm spikes=%" PRIu32 "ppm windows=",
-           quality_rate_ppm(capture.quality_early_centre_differences,
-                            capture.quality_triplets),
-           quality_rate_ppm(capture.quality_centre_late_differences,
-                            capture.quality_triplets),
-           quality_rate_ppm(capture.quality_centre_outliers,
-                            capture.quality_triplets));
-    for (unsigned channel = 0; channel < P2000T_RGB_CHANNEL_COUNT;
-         ++channel) {
-        printf("%c:", channel == 0u ? 'R' : (channel == 1u ? 'G' : 'B'));
-        for (unsigned window = 0; window < P2000T_TAP_WINDOW_COUNT;
-             ++window) {
-            const uint32_t window_rate = channel_quality_rate_ppm(
-                capture.quality_channel_window_disagreements
-                    [channel][window],
-                capture.quality_triplets);
-            eye_scan.channel_window_rates_ppm[eye_scan.phase_index]
-                                                    [channel][window] =
-                window_rate;
-            printf("%s%" PRIu32, window == 0u ? "" : "/", window_rate);
-        }
-        printf("%s", channel + 1u == P2000T_RGB_CHANNEL_COUNT ? "" : " ");
-    }
-    printf("ppm\n");
-
-    ++eye_scan.phase_index;
-    if (eye_scan.phase_index == EYE_SCAN_PHASE_COUNT) {
-        finish_eye_scan();
-        return;
-    }
-    (void)p2000t_capture_set_sample_phase(
-        EYE_SCAN_FIRST_PHASE + (int)eye_scan.phase_index);
 }
 
 static void print_help(void) {
-    printf("Commands: s=status, a=28-second per-RGB eye scan, "
-           "[=image up, ]=image down, "
+    printf("Commands: s=status, [=image up, ]=image down, "
            "0=reset line, ,=sample earlier, .=sample later, "
-           "p=reset phase, <=window earlier, >=window later, "
-           "x=reset window, h=help\n");
+           "p=reset phase, <=start earlier, >=start later, "
+           "x=reset start, h=help\n");
 }
 
 static void adjust_first_visible_line(int change) {
@@ -670,7 +323,6 @@ static void adjust_first_visible_line(int change) {
 }
 
 static void adjust_sample_phase(int change) {
-    cancel_eye_scan();
     p2000t_capture_stats_t capture;
     p2000t_capture_get_stats(&capture);
     const int requested = capture.sample_phase + change;
@@ -691,13 +343,13 @@ static void adjust_horizontal_offset(int change) {
     if (requested < P2000T_MIN_HORIZONTAL_OFFSET ||
         requested > P2000T_MAX_HORIZONTAL_OFFSET ||
         !p2000t_capture_set_horizontal_offset((unsigned)requested)) {
-        printf("Horizontal offset must remain between %u and %u dots.\n",
+        printf("Horizontal start must remain between %u and %u source dots.\n",
                P2000T_MIN_HORIZONTAL_OFFSET,
                P2000T_MAX_HORIZONTAL_OFFSET);
         return;
     }
-    printf("Horizontal source window offset set to %d dots (%d characters); "
-           "applies on the next source frame.\n",
+    printf("Horizontal start set to %d source dots (%d characters); "
+           "applies on the next frame.\n",
            requested, requested / P2000T_HORIZONTAL_OFFSET_STEP);
 }
 
@@ -706,8 +358,6 @@ static void poll_usb_commands(void) {
     while ((command = getchar_timeout_us(0)) != PICO_ERROR_TIMEOUT) {
         if (command == 's' || command == 'S') {
             print_status();
-        } else if (command == 'a' || command == 'A') {
-            start_eye_scan();
         } else if (command == '[' || command == '-') {
             adjust_first_visible_line(-1);
         } else if (command == ']' || command == '+') {
@@ -723,7 +373,6 @@ static void poll_usb_commands(void) {
         } else if (command == '.') {
             adjust_sample_phase(1);
         } else if (command == 'p' || command == 'P') {
-            cancel_eye_scan();
             if (p2000t_capture_set_sample_phase(
                     P2000T_DEFAULT_SAMPLE_PHASE)) {
                 printf("Sample phase reset to %d.\n",
@@ -736,7 +385,7 @@ static void poll_usb_commands(void) {
         } else if (command == 'x' || command == 'X') {
             if (p2000t_capture_set_horizontal_offset(
                     P2000T_DEFAULT_HORIZONTAL_OFFSET)) {
-                printf("Horizontal source window reset to %u dots.\n",
+                printf("Horizontal start reset to %u source dots.\n",
                        P2000T_DEFAULT_HORIZONTAL_OFFSET);
             }
         } else if (command == 'h' || command == 'H' || command == '?') {
@@ -788,10 +437,10 @@ int main(void) {
 #else
             printf("Input profile: corrected PCB v2 DIN mapping\n");
 #endif
-            printf("Display: 240 dots selected from a 300-dot RGBS window, "
-                   "scaled 2x2 to centered 480x480 VGA\n");
+            printf("Display: 480x240 raw RGBS capture, vertically doubled "
+                   "to centered 480x480 VGA\n");
             printf("EXPERIMENTAL clock=%uMHz core_voltage=%u.%03uV; "
-                   "capture=126MHz/five-tap per-RGB majority VGA=25.2MHz\n",
+                   "capture=12MHz raw VGA=25.2MHz\n",
                    SYSTEM_CLOCK_KHZ / 1000u,
                    SYSTEM_CORE_VOLTAGE_MV / 1000u,
                    SYSTEM_CORE_VOLTAGE_MV % 1000u);
@@ -800,7 +449,6 @@ int main(void) {
             announced = true;
         }
         poll_usb_commands();
-        poll_eye_scan();
         sleep_ms(10);
     }
 }
