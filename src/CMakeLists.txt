@@ -6,6 +6,7 @@ set(FIRMWARE_TARGET p2000t_vid2vga_firmware)
 add_executable(${FIRMWARE_TARGET}
     firmware.c
     p2000t_capture.c
+    p2000t_video_renderer.c
 )
 
 target_include_directories(${FIRMWARE_TARGET} PRIVATE
@@ -58,7 +59,11 @@ else()
         P2000T_PROTOTYPE_V1_MIRRORED_DIN=0)
 endif()
 
-set_source_files_properties(firmware.c p2000t_capture.c PROPERTIES
+set_source_files_properties(
+    firmware.c
+    p2000t_capture.c
+    p2000t_video_renderer.c
+    PROPERTIES
     COMPILE_OPTIONS "-Wall;-Wextra;-Wpedantic"
 )
 

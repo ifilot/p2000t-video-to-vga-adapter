@@ -4,6 +4,8 @@ Notable project changes are recorded here.
 
 ## Unreleased
 
+## 0.1.1 - 2026-08-26
+
 ### Added
 
 - P2000M-style signal-loss status screen.
@@ -16,6 +18,17 @@ Notable project changes are recorded here.
 
 - Board selection is now controlled with `PICO_BOARD` in a separate CMake
   build directory.
+- Source-frame and no-signal rendering are isolated in a dedicated,
+  SRAM-resident renderer module.
+- Firmware functions, parameters, constants, state, and public data structures
+  now have Doxygen documentation.
+- Frame-buffer sequence comparisons remain correct across 32-bit counter
+  rollover.
+
+### Removed
+
+- Unused raw-pixel accessor, frame-byte constant, and lowercase font
+  normalization left over from earlier capture experiments.
 
 ## 0.1.0 - 2026-08-26
 
