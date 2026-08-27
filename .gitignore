@@ -42,4 +42,9 @@ pcb/.history
 build/
 build-gui/
 cmake-build-*/
+dist/
 .ci-dependencies/
+
+# Python helper cache
+__pycache__/
+*.py[cod]

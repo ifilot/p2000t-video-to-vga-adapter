@@ -3,8 +3,37 @@
 
 set(FIRMWARE_TARGET p2000t_vid2vga_firmware)
 
+set(NO_CONNECTION_IMAGE_ASSEMBLIES)
+function(embed_no_connection_image symbol relative_source)
+    set(NO_CONNECTION_IMAGE_SYMBOL "${symbol}")
+    set(NO_CONNECTION_IMAGE_SOURCE "${CMAKE_SOURCE_DIR}/${relative_source}")
+    set(NO_CONNECTION_IMAGE_ASSEMBLY
+        "${CMAKE_CURRENT_BINARY_DIR}/${symbol}.S")
+    if(NOT EXISTS "${NO_CONNECTION_IMAGE_SOURCE}")
+        message(FATAL_ERROR
+            "No-connection artwork not found: ${NO_CONNECTION_IMAGE_SOURCE}")
+    endif()
+    configure_file(no_connection_image.S.in
+        "${NO_CONNECTION_IMAGE_ASSEMBLY}" @ONLY)
+    set_source_files_properties("${NO_CONNECTION_IMAGE_ASSEMBLY}" PROPERTIES
+        OBJECT_DEPENDS "${NO_CONNECTION_IMAGE_SOURCE}"
+    )
+    list(APPEND NO_CONNECTION_IMAGE_ASSEMBLIES
+        "${NO_CONNECTION_IMAGE_ASSEMBLY}")
+    set(NO_CONNECTION_IMAGE_ASSEMBLIES
+        "${NO_CONNECTION_IMAGE_ASSEMBLIES}" PARENT_SCOPE)
+endfunction()
+
+embed_no_connection_image(no_connection_image_green_phosphor
+    "assets/no_connection_concepts/firmware_assets/04_green_phosphor.idx4")
+embed_no_connection_image(no_connection_image_synthwave
+    "assets/no_connection_concepts/firmware_assets/05_synthwave.idx4")
+embed_no_connection_image(no_connection_image_amber_circuit
+    "assets/no_connection_concepts/firmware_assets/08_amber_circuit.idx4")
+
 add_executable(${FIRMWARE_TARGET}
     firmware.c
+    ${NO_CONNECTION_IMAGE_ASSEMBLIES}
     p2000t_capture.c
     p2000t_video_renderer.c
 )

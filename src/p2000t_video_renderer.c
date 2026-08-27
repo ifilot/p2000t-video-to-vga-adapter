@@ -18,7 +18,7 @@
 #include "pico/scanvideo/composable_scanline.h"
 #include "pico/stdlib.h"
 
-/** Layout and font constants used by the no-signal status card. */
+/** Layout and font constants used by the no-signal text overlay. */
 enum {
     VGA_LEFT_MARGIN = (P2000T_VGA_RENDER_WIDTH - P2000T_CAPTURE_WIDTH) / 2,
     /**< Black pixels to the left of the centered source image. */
@@ -28,16 +28,17 @@ enum {
     NO_SIGNAL_GLYPH_WIDTH = 5,    /**< Width of one bitmap glyph. */
     NO_SIGNAL_GLYPH_HEIGHT = 7,   /**< Height of one bitmap glyph. */
     NO_SIGNAL_FONT_GLYPHS = 36,   /**< Stored A-Z and 0-9 glyph count. */
-    NO_SIGNAL_PANEL_LEFT = 90,    /**< Left edge of the status panel. */
-    NO_SIGNAL_PANEL_RIGHT = 550,  /**< Exclusive right panel edge. */
-    NO_SIGNAL_PANEL_TOP = 70,     /**< Top edge of the status panel. */
-    NO_SIGNAL_PANEL_BOTTOM = 170, /**< Exclusive bottom panel edge. */
-    NO_SIGNAL_PANEL_BORDER_X = 3, /**< Vertical border thickness. */
-    NO_SIGNAL_PANEL_BORDER_Y = 2, /**< Horizontal border thickness. */
-    NO_SIGNAL_PRODUCT_TOP = 82,   /**< Product-name text baseline area. */
-    NO_SIGNAL_MESSAGE_TOP = 100,  /**< Alert text top edge. */
-    NO_SIGNAL_FIRMWARE_TOP = 127, /**< Firmware-version text top edge. */
-    NO_SIGNAL_WAITING_TOP = 147,  /**< Waiting-message text top edge. */
+    NO_SIGNAL_TITLE_TOP = 3,   /**< Application title in logical VGA lines. */
+    NO_SIGNAL_VERSION_TOP = 13, /**< Firmware version below the title. */
+    NO_SIGNAL_ICON_TOP = 196,  /**< Disconnected-plug pictogram top edge. */
+    NO_SIGNAL_ICON_HEIGHT = 14, /**< Pictogram height in logical VGA lines. */
+    NO_SIGNAL_STATUS_TOP = 217, /**< Status label below the pictogram. */
+    NO_SIGNAL_PALETTE_COLORS = 16,
+    /**< Number of colors in the indexed artwork palette. */
+    NO_SIGNAL_PALETTE_BYTES = NO_SIGNAL_PALETTE_COLORS * sizeof(uint16_t),
+    /**< Byte offset from the asset start to its packed pixel data. */
+    NO_SIGNAL_PACKED_BYTES_PER_LINE = P2000T_VGA_RENDER_WIDTH / 2,
+    /**< Two four-bit palette indices are stored in each source byte. */
 };
 
 _Static_assert(VGA_LEFT_MARGIN == 80 && VGA_RIGHT_MARGIN == 80,
@@ -45,17 +46,15 @@ _Static_assert(VGA_LEFT_MARGIN == 80 && VGA_RIGHT_MARGIN == 80,
 _Static_assert(P2000T_RAW_SCANLINE_WORDS == 323,
                "CMake scanvideo storage must match the raw line renderer");
 
-/** Product name displayed on the no-signal status card. */
-static const char no_signal_product[] = "P2000T VID2VGA";
+/** Application identity and status displayed around the centered artwork. */
+static const char no_signal_title[] = "P2000T VID2VGA";
+static const char no_signal_version[] = "VERSION " P2000T_VID2VGA_VERSION;
+static const char no_signal_status[] = "NO CONNECTION";
 
-/** Main alert displayed on the no-signal status card. */
-static const char no_signal_message[] = "SIGNAL LOST";
-
-/** Compiled firmware version displayed on the no-signal status card. */
-static const char no_signal_firmware[] = "FIRMWARE V" P2000T_VID2VGA_VERSION;
-
-/** Capture state displayed on the no-signal status card. */
-static const char no_signal_waiting[] = "WAITING FOR CSYNC";
+/** Compact indexed artwork embedded by CMake. */
+extern const uint8_t no_connection_image_green_phosphor[];
+extern const uint8_t no_connection_image_synthwave[];
+extern const uint8_t no_connection_image_amber_circuit[];
 
 /** Full-scale RGB444 colors in P2000T bit order R=1, G=2, B=4. */
 static const uint16_t source_colors[8] = {
@@ -64,6 +63,30 @@ static const uint16_t source_colors[8] = {
 
 /** Two decoded RGB444 pixels for every packed pair of raw input nibbles. */
 static uint32_t raw_byte_colors[256];
+
+/** Two RGB444 pixels for each packed pair in each artwork palette. */
+static uint32_t
+    no_signal_byte_colors[P2000T_NO_SIGNAL_ARTWORK_COUNT][256];
+
+/**
+ * @brief Resolve an artwork selection to its flash-resident asset.
+ *
+ * This is always inlined into the RAM-resident scanline renderer so selecting
+ * an image does not introduce a call back into flash on the critical path.
+ */
+static inline __attribute__((always_inline)) const uint8_t *
+no_signal_image(p2000t_no_signal_artwork_t artwork) {
+    switch (artwork) {
+    case P2000T_NO_SIGNAL_GREEN_PHOSPHOR:
+        return no_connection_image_green_phosphor;
+    case P2000T_NO_SIGNAL_SYNTHWAVE:
+        return no_connection_image_synthwave;
+    case P2000T_NO_SIGNAL_AMBER_CIRCUIT:
+        return no_connection_image_amber_circuit;
+    default:
+        return no_connection_image_amber_circuit;
+    }
+}
 
 /** Five-bit rows for uppercase letters A-Z followed by digits 0-9. */
 static const uint8_t
@@ -133,7 +156,7 @@ static void finish_raw_scanline(scanvideo_scanline_buffer_t *scanline_buffer,
  * @param row Zero-based row within the seven-row glyph.
  * @return Five low-order bits containing the requested glyph row.
  */
-static uint8_t no_signal_glyph_row(char character, unsigned row) {
+static inline uint8_t no_signal_glyph_row(char character, unsigned row) {
     hard_assert(row < NO_SIGNAL_GLYPH_HEIGHT);
     if (character >= 'A' && character <= 'Z') {
         return no_signal_font[(unsigned)(character - 'A')][row];
@@ -155,10 +178,9 @@ static uint8_t no_signal_glyph_row(char character, unsigned row) {
  * @param y_scale Vertical integer glyph scale.
  * @param color RGB444 text color.
  */
-static void render_no_signal_text(uint16_t *tokens, unsigned y,
-                                  const char *message, unsigned top,
-                                  unsigned x_scale, unsigned y_scale,
-                                  uint16_t color) {
+static void __not_in_flash_func(render_no_signal_text)(
+    uint16_t *tokens, unsigned y, const char *message, unsigned top,
+    unsigned x_scale, unsigned y_scale, uint16_t color) {
     if (y < top || y >= top + NO_SIGNAL_GLYPH_HEIGHT * y_scale) {
         return;
     }
@@ -185,6 +207,78 @@ static void render_no_signal_text(uint16_t *tokens, unsigned y,
     }
 }
 
+/**
+ * @brief Draw a compact disconnected plug-and-socket pictogram.
+ *
+ * The artwork below the computer is deliberately rendered in firmware so it
+ * stays pure white after palette reduction and remains crisp on VGA output.
+ *
+ * @param tokens Writable 16-bit composable scanline tokens.
+ * @param y Zero-based logical VGA line currently being rendered.
+ * @param top Top edge of the pictogram in logical VGA lines.
+ * @param color RGB444 pictogram color.
+ */
+static void __not_in_flash_func(render_no_signal_icon)(uint16_t *tokens,
+                                                       unsigned y,
+                                                       unsigned top,
+                                                       uint16_t color) {
+    if (y < top || y >= top + NO_SIGNAL_ICON_HEIGHT) {
+        return;
+    }
+
+    const unsigned row = y - top;
+    const unsigned center = P2000T_VGA_RENDER_WIDTH / 2u;
+
+    /* Cable entering the solid plug from the left. */
+    if (row >= 6u && row <= 7u) {
+        for (unsigned x = center - 36u; x < center - 22u; ++x) {
+            tokens[x + 2u] = color;
+        }
+    }
+
+    /* Solid plug body with two separated prongs facing right. */
+    if (row >= 3u && row <= 10u) {
+        for (unsigned x = center - 22u; x < center - 10u; ++x) {
+            tokens[x + 2u] = color;
+        }
+    }
+    if ((row >= 4u && row <= 5u) || (row >= 8u && row <= 9u)) {
+        for (unsigned x = center - 10u; x < center - 4u; ++x) {
+            tokens[x + 2u] = color;
+        }
+    }
+
+    /* Outlined socket and cable, clearly separated from the plug. */
+    if (row == 3u || row == 10u) {
+        for (unsigned x = center + 4u; x < center + 22u; ++x) {
+            tokens[x + 2u] = color;
+        }
+    } else if (row > 3u && row < 10u) {
+        tokens[center + 4u + 2u] = color;
+        tokens[center + 5u + 2u] = color;
+        tokens[center + 20u + 2u] = color;
+        tokens[center + 21u + 2u] = color;
+    }
+    if (row >= 6u && row <= 7u) {
+        for (unsigned x = center + 22u; x < center + 36u; ++x) {
+            tokens[x + 2u] = color;
+        }
+    }
+
+    /* Small separation rays make the lost connection legible at a glance. */
+    if (row == 0u) {
+        tokens[center + 2u] = color;
+    } else if (row == 1u) {
+        tokens[center - 2u + 2u] = color;
+        tokens[center + 2u + 2u] = color;
+    } else if (row == 12u) {
+        tokens[center - 2u + 2u] = color;
+        tokens[center + 2u + 2u] = color;
+    } else if (row == 13u) {
+        tokens[center + 2u] = color;
+    }
+}
+
 void p2000t_video_renderer_initialize(void) {
     uint16_t raw_nibble_colors[16];
     for (unsigned raw = 0; raw < 16u; ++raw) {
@@ -199,55 +293,61 @@ void p2000t_video_renderer_initialize(void) {
             raw_nibble_colors[raw >> 4u] |
             ((uint32_t)raw_nibble_colors[raw & 0x0fu] << 16u);
     }
+
+    /* Expand all three tiny flash-resident palettes into SRAM. Selection can
+     * then change at a frame boundary without rebuilding a table or adding
+     * work to the scanline deadline. */
+    for (unsigned artwork = 0; artwork < P2000T_NO_SIGNAL_ARTWORK_COUNT;
+         ++artwork) {
+        const uint16_t *palette = (const uint16_t *)no_signal_image(
+            (p2000t_no_signal_artwork_t)artwork);
+        for (unsigned packed = 0; packed < 256u; ++packed) {
+            no_signal_byte_colors[artwork][packed] =
+                palette[packed >> 4u] |
+                ((uint32_t)palette[packed & 0x0fu] << 16u);
+        }
+    }
 }
 
 void __not_in_flash_func(p2000t_video_render_no_signal_scanline)(
-    scanvideo_scanline_buffer_t *scanline_buffer, unsigned y) {
+    scanvideo_scanline_buffer_t *scanline_buffer, unsigned y,
+    p2000t_no_signal_artwork_t artwork) {
     hard_assert(scanline_buffer != NULL);
     hard_assert(scanline_buffer->data_max >= P2000T_RAW_SCANLINE_WORDS);
     hard_assert(y < P2000T_VGA_RENDER_HEIGHT);
+    hard_assert((unsigned)artwork < P2000T_NO_SIGNAL_ARTWORK_COUNT);
 
-    const uint16_t canvas_color = 0x0000;
-    const uint16_t panel_color = 0x0221;
-    const uint16_t alert_color = 0x033e;
-    const uint16_t text_color = 0x0fff;
+    const uint8_t *image = no_signal_image(artwork);
+    const uint32_t *color_pairs = no_signal_byte_colors[artwork];
+    const uint8_t *image_row =
+        &image[NO_SIGNAL_PALETTE_BYTES +
+               y * NO_SIGNAL_PACKED_BYTES_PER_LINE];
     uint16_t *tokens = (uint16_t *)scanline_buffer->data;
     tokens[0] = COMPOSABLE_RAW_RUN;
-    tokens[1] = canvas_color;
+    const uint32_t first_pair = color_pairs[image_row[0]];
+    tokens[1] = (uint16_t)first_pair;
     tokens[2] = P2000T_VGA_RENDER_WIDTH - 3;
-    for (unsigned x = 1; x < P2000T_VGA_RENDER_WIDTH; ++x) {
-        tokens[x + 2u] = canvas_color;
-    }
+    tokens[3] = (uint16_t)(first_pair >> 16u);
 
-    const bool panel_line =
-        y >= NO_SIGNAL_PANEL_TOP && y < NO_SIGNAL_PANEL_BOTTOM;
-    const bool horizontal_border =
-        panel_line && (y < NO_SIGNAL_PANEL_TOP + NO_SIGNAL_PANEL_BORDER_Y ||
-                       y >= NO_SIGNAL_PANEL_BOTTOM - NO_SIGNAL_PANEL_BORDER_Y);
-    if (panel_line) {
-        const uint16_t fill_color =
-            horizontal_border ? alert_color : panel_color;
-        for (unsigned x = NO_SIGNAL_PANEL_LEFT; x < NO_SIGNAL_PANEL_RIGHT;
-             ++x) {
-            tokens[x + 2u] = fill_color;
-        }
-        if (!horizontal_border) {
-            for (unsigned offset = 0; offset < NO_SIGNAL_PANEL_BORDER_X;
-                 ++offset) {
-                tokens[NO_SIGNAL_PANEL_LEFT + offset + 2u] = alert_color;
-                tokens[NO_SIGNAL_PANEL_RIGHT - offset + 1u] = alert_color;
-            }
-        }
+    /* This is intentionally a separate compact pipeline from the source
+     * renderer. It reads only 320 indexed bytes from XIP flash per line,
+     * instead of copying 1,280 bytes of RGB444 data before the VGA deadline. */
+    hard_assert(((uintptr_t)&tokens[4] & 3u) == 0u);
+    uint32_t *destination = (uint32_t *)&tokens[4];
+    for (unsigned index = 1; index < NO_SIGNAL_PACKED_BYTES_PER_LINE;
+         ++index) {
+        *destination++ = color_pairs[image_row[index]];
     }
+    hard_assert(destination ==
+                (uint32_t *)&tokens[P2000T_VGA_RENDER_WIDTH + 2u]);
 
-    render_no_signal_text(tokens, y, no_signal_product, NO_SIGNAL_PRODUCT_TOP,
-                          2, 1, text_color);
-    render_no_signal_text(tokens, y, no_signal_message, NO_SIGNAL_MESSAGE_TOP,
-                          4, 2, text_color);
-    render_no_signal_text(tokens, y, no_signal_firmware, NO_SIGNAL_FIRMWARE_TOP,
-                          2, 1, text_color);
-    render_no_signal_text(tokens, y, no_signal_waiting, NO_SIGNAL_WAITING_TOP,
-                          2, 1, text_color);
+    render_no_signal_text(tokens, y, no_signal_title, NO_SIGNAL_TITLE_TOP, 3, 1,
+                          0x0fff);
+    render_no_signal_text(tokens, y, no_signal_version, NO_SIGNAL_VERSION_TOP,
+                          2, 1, 0x0fff);
+    render_no_signal_icon(tokens, y, NO_SIGNAL_ICON_TOP, 0x0fff);
+    render_no_signal_text(tokens, y, no_signal_status, NO_SIGNAL_STATUS_TOP, 2,
+                          1, 0x0fff);
     finish_raw_scanline(scanline_buffer, tokens);
 }
 

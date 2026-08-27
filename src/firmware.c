@@ -83,6 +83,8 @@ typedef struct {
     int buffer_index;               /**< Currently displayed capture buffer. */
     const uint32_t *frame;          /**< Packed frame currently being read. */
     bool signal_present;            /**< Signal decision fixed per VGA frame. */
+    p2000t_no_signal_artwork_t
+        no_signal_artwork;          /**< Artwork fixed per VGA frame. */
     uint32_t previous_scanline_id;  /**< Last scanvideo identifier observed. */
     bool have_previous_scanline_id; /**< Whether the previous ID is valid. */
 } vga_display_state_t;
@@ -101,10 +103,15 @@ typedef struct {
 /** VGA-core-owned display state, initialized without a captured frame. */
 static vga_display_state_t display_state = {
     .buffer_index = -1,
+    .no_signal_artwork = P2000T_NO_SIGNAL_ARTWORK_DEFAULT,
 };
 
 /** Diagnostics shared atomically between the VGA and control cores. */
 static vga_statistics_t vga_statistics;
+
+/** USB-selected artwork adopted by the VGA core at its next frame boundary. */
+static volatile uint32_t requested_no_signal_artwork =
+    P2000T_NO_SIGNAL_ARTWORK_DEFAULT;
 
 /**
  * @brief Increment a diagnostic counter owned exclusively by the VGA core.
@@ -148,6 +155,8 @@ static inline void store_statistic(volatile uint32_t *destination,
  */
 static void select_frame_for_next_vga_frame(void) {
     increment_counter(&vga_statistics.generated_frames);
+    display_state.no_signal_artwork = (p2000t_no_signal_artwork_t)
+        load_statistic(&requested_no_signal_artwork);
     display_state.signal_present = p2000t_capture_signal_present();
 
     uint32_t sequence;
@@ -211,7 +220,8 @@ static void render_scanline(scanvideo_scanline_buffer_t *scanline_buffer) {
         select_frame_for_next_vga_frame();
     }
     if (!display_state.signal_present || display_state.buffer_index < 0) {
-        p2000t_video_render_no_signal_scanline(scanline_buffer, y);
+        p2000t_video_render_no_signal_scanline(
+            scanline_buffer, y, display_state.no_signal_artwork);
         return;
     }
     p2000t_video_render_source_scanline(scanline_buffer, display_state.frame,
@@ -247,6 +257,7 @@ static void print_status(void) {
     const uint32_t id_gaps = load_statistic(&vga_statistics.scanline_id_gaps);
     const uint32_t sequence =
         load_statistic(&vga_statistics.displayed_sequence);
+    const uint32_t artwork = load_statistic(&requested_no_signal_artwork);
 
     printf("VID2VGA captured=%" PRIu32 " locked=%s period=",
            capture.captured_frames, capture.signal_present ? "yes" : "no");
@@ -262,10 +273,10 @@ static void print_status(void) {
     printf(" first_line=%" PRIu32 " h_offset=%" PRIu32 " phase=%" PRId32
            " stale=%" PRIu32 " vga=%" PRIu32 " swaps=%" PRIu32
            " repeats=%" PRIu32 " lost=%" PRIu32 " id_gaps=%" PRIu32
-           " displayed=%" PRIu32 "\n",
+           " displayed=%" PRIu32 " artwork=%" PRIu32 "\n",
            capture.first_visible_scanline, capture.horizontal_offset,
            capture.sample_phase, capture.stale_frames_replaced, vga_frames,
-           swaps, repeats, lost, id_gaps, sequence);
+           swaps, repeats, lost, id_gaps, sequence, artwork + 1u);
 }
 
 /** @brief Print the available single-character USB commands. */
@@ -274,6 +285,23 @@ static void print_help(void) {
            "0=reset line, ,=sample earlier, .=sample later, "
            "p=reset phase, <=start earlier, >=start later, "
            "x=reset start, h=help\n");
+    printf("No-connection artwork: 1=green phosphor, 2=synthwave, "
+           "3=amber circuit\n");
+}
+
+/**
+ * @brief Request a no-connection artwork change at the next VGA frame.
+ *
+ * @param artwork Valid embedded artwork selection.
+ */
+static void select_no_signal_artwork(p2000t_no_signal_artwork_t artwork) {
+    hard_assert((unsigned)artwork < P2000T_NO_SIGNAL_ARTWORK_COUNT);
+    store_statistic(&requested_no_signal_artwork, (uint32_t)artwork);
+    static const char *const names[P2000T_NO_SIGNAL_ARTWORK_COUNT] = {
+        "green phosphor", "synthwave", "amber circuit"};
+    printf("No-connection artwork %u selected: %s. "
+           "Applies at the next VGA frame.\n",
+           (unsigned)artwork + 1u, names[artwork]);
 }
 
 /**
@@ -346,6 +374,15 @@ static void adjust_horizontal_offset(int change) {
  */
 static void handle_usb_command(int command) {
     switch (command) {
+    case '1':
+        select_no_signal_artwork(P2000T_NO_SIGNAL_GREEN_PHOSPHOR);
+        break;
+    case '2':
+        select_no_signal_artwork(P2000T_NO_SIGNAL_SYNTHWAVE);
+        break;
+    case '3':
+        select_no_signal_artwork(P2000T_NO_SIGNAL_AMBER_CIRCUIT);
+        break;
     case 's':
     case 'S':
         print_status();

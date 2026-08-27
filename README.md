@@ -18,14 +18,27 @@ Hardware and firmware for converting the Philips P2000T RGBS output to
 - Triple-buffered, frame-boundary VGA updates
 - Horizontally qualified CSYNC capture
 - 640×480 at 60 Hz RGB444 VGA output
-- On-screen signal-loss status
+- Three selectable on-screen signal-loss designs
 - USB serial controls and capture statistics
 - Pico and experimental Pico 2 builds
 
 ## Building
 
-Install the Arm GNU toolchain, CMake, Ninja, Pico SDK 2.1.1, and pico-extras
-2.1.1. Set `PICO_SDK_PATH` and `PICO_EXTRAS_PATH`, then run:
+Install the Arm GNU toolchain, CMake, and Ninja. On Ubuntu or Debian, install
+the required build packages with:
+
+```sh
+sudo apt update
+sudo apt install cmake ninja-build gcc-arm-none-eabi \
+  libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib git python3
+```
+
+CMake downloads the pinned Pico SDK 2.1.1, pico-extras 2.1.1, and required
+host utilities into the ignored `.ci-dependencies` directory on first use.
+Existing SDK checkouts can be selected instead by setting `PICO_SDK_PATH` and
+`PICO_EXTRAS_PATH`.
+
+Configure and build the Pico firmware:
 
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DPICO_BOARD=pico
@@ -49,11 +62,23 @@ Both boards currently run at 252 MHz and 1.30 V to obtain exact 126 MHz
 capture and 25.2 MHz VGA clocks. The Pico 2 configuration compiles but remains
 an experimental overclock requiring hardware testing.
 
+The firmware embeds concepts 04, 05, and 08 as compact 16-color RGB444
+indexed images so their scanlines can be expanded within the VGA timing
+deadline. Amber circuit is the power-on default. While connected over USB,
+press `1` for green phosphor, `2` for synthwave, or `3` for amber circuit. The
+choice takes effect atomically at the next VGA frame and is not persisted
+across a power cycle.
+
+The complete concept catalog and reproduction instructions are in
+`assets/no_connection_concepts/README.md`. Custom 640×480 artwork can still be
+encoded with `tools/encode_no_connection.py` after installing Pillow.
+
 ## USB controls
 
 Connect to the Pico USB serial port and press `h` for help. Useful commands are
 `s` for status, `[`/`]` for vertical position, `,`/`.` for sample phase, and
-`<`/`>` for horizontal position. Phase 0 is the default.
+`<`/`>` for horizontal position. Use `1`, `2`, or `3` to select the
+no-connection artwork. Phase 0 is the default.
 
 ## License
 

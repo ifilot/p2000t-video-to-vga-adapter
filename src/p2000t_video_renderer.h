@@ -29,6 +29,15 @@ enum {
     /**< Number of 32-bit scanvideo buffer words required per scanline. */
 };
 
+/** Selectable artwork embedded for the no-connection screen. */
+typedef enum {
+    P2000T_NO_SIGNAL_GREEN_PHOSPHOR = 0,
+    P2000T_NO_SIGNAL_SYNTHWAVE = 1,
+    P2000T_NO_SIGNAL_AMBER_CIRCUIT = 2,
+    P2000T_NO_SIGNAL_ARTWORK_COUNT = 3,
+    P2000T_NO_SIGNAL_ARTWORK_DEFAULT = P2000T_NO_SIGNAL_AMBER_CIRCUIT,
+} p2000t_no_signal_artwork_t;
+
 /**
  * @brief Initialize lookup tables used by the source-frame renderer.
  *
@@ -54,8 +63,10 @@ void p2000t_video_render_source_scanline(
  * @param scanline_buffer Writable scanvideo buffer with at least
  *        P2000T_RAW_SCANLINE_WORDS words of storage.
  * @param y Zero-based logical VGA line to render.
+ * @param artwork Artwork selected for the current VGA frame.
  */
 void p2000t_video_render_no_signal_scanline(
-    scanvideo_scanline_buffer_t *scanline_buffer, unsigned y);
+    scanvideo_scanline_buffer_t *scanline_buffer, unsigned y,
+    p2000t_no_signal_artwork_t artwork);
 
 #endif
