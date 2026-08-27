@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "p2000t_capture.h"
+#include "p2000t_control_protocol.h"
 #include "p2000t_packbits.h"
 #include "p2000t_stream_protocol.h"
 #include "pico/stdio_usb.h"
@@ -51,6 +52,8 @@ static bool stream_active;
 static bool packbits_allowed;
 static bool tx_active;
 static bool tx_packbits;
+static bool tx_configuration;
+static bool configuration_pending;
 static bool last_sequence_valid;
 static bool last_display_state_valid;
 static bool last_signal_present;
@@ -59,6 +62,8 @@ static uint32_t tx_sequence;
 static uint32_t last_sequence;
 static uint8_t last_no_signal_artwork;
 static uint8_t tx_no_signal_artwork;
+static uint8_t pending_configuration[P2000T_CONFIGURATION_STATE_SIZE];
+static uint8_t tx_configuration_payload[P2000T_CONFIGURATION_STATE_SIZE];
 static size_t tx_header_offset;
 static size_t tx_payload_offset;
 static size_t tx_payload_size;
@@ -136,8 +141,21 @@ static void build_header(uint32_t sequence, uint32_t checksum) {
     memset(stream_header, 0, sizeof(stream_header));
     memcpy(stream_header, P2000T_STREAM_MAGIC, 4u);
     stream_header[4] = P2000T_STREAM_PROTOCOL_VERSION;
-    stream_header[5] = tx_packbits ? P2000T_STREAM_ENCODING_PACKBITS
-                                   : P2000T_STREAM_ENCODING_RAW;
+    stream_header[5] = tx_configuration
+                           ? P2000T_STREAM_ENCODING_CONFIGURATION
+                           : (tx_packbits ? P2000T_STREAM_ENCODING_PACKBITS
+                                          : P2000T_STREAM_ENCODING_RAW);
+    if (tx_configuration) {
+        store_u16(&stream_header[6],
+                  P2000T_STREAM_FLAG_CONFIGURATION_STATE);
+        store_u16(&stream_header[22], P2000T_STREAM_HEADER_SIZE);
+        store_u32(&stream_header[24], (uint32_t)tx_payload_size);
+        store_u32(&stream_header[28], checksum);
+        store_u32(&stream_header[32], (uint32_t)tx_payload_size);
+        stream_header[P2000T_STREAM_ARTWORK_OFFSET] =
+            tx_configuration_payload[14];
+        return;
+    }
     uint16_t flags = P2000T_STREAM_FLAG_PLANAR_RGB111 |
                      P2000T_STREAM_FLAG_PIXELS_MSB_FIRST |
                      P2000T_STREAM_FLAG_TIMING_DIAGNOSTICS;
@@ -171,6 +189,7 @@ static void begin_no_signal_record(unsigned no_signal_artwork) {
     tx_signal_present = false;
     tx_no_signal_artwork = (uint8_t)no_signal_artwork;
     tx_packbits = false;
+    tx_configuration = false;
     tx_payload_size = 0u;
     tx_sequence = last_sequence_valid ? last_sequence : 0u;
     tx_header_offset = 0u;
@@ -185,9 +204,35 @@ static void begin_no_signal_record(unsigned no_signal_artwork) {
     tx_active = true;
 }
 
+static void begin_configuration_record(void) {
+    memcpy(tx_configuration_payload, pending_configuration,
+           sizeof(tx_configuration_payload));
+    configuration_pending = false;
+    tx_configuration = true;
+    tx_signal_present = false;
+    tx_packbits = false;
+    tx_payload_size = sizeof(tx_configuration_payload);
+    tx_header_offset = 0u;
+    tx_payload_offset = 0u;
+    packbits_input_offset = 0u;
+    packbits_staging_size = 0u;
+    packbits_staging_offset = 0u;
+    tx_encode_us = 0u;
+    build_header(last_sequence_valid ? last_sequence : 0u,
+                 frame_crc32(tx_configuration_payload,
+                             sizeof(tx_configuration_payload)));
+    tx_started_us = time_us_64();
+    tx_active = true;
+}
+
 static void begin_available_frame(bool signal_present,
                                   unsigned no_signal_artwork) {
     if (tx_active) {
+        return;
+    }
+
+    if (configuration_pending) {
+        begin_configuration_record();
         return;
     }
 
@@ -224,6 +269,7 @@ static void begin_available_frame(bool signal_present,
                                           P2000T_STREAM_PAYLOAD_SIZE)
                                     : P2000T_STREAM_PAYLOAD_SIZE;
     tx_packbits = encoded_size < P2000T_STREAM_PAYLOAD_SIZE;
+    tx_configuration = false;
     tx_payload_size = tx_packbits ? encoded_size
                                   : P2000T_STREAM_PAYLOAD_SIZE;
     const uint32_t checksum =
@@ -276,12 +322,21 @@ void p2000t_usb_stream_start(bool allow_packbits) {
 void p2000t_usb_stream_stop(void) {
     stream_active = false;
     tx_active = false;
+    configuration_pending = false;
     tx_header_offset = 0u;
     tx_payload_offset = 0u;
     tx_payload_size = 0u;
     packbits_input_offset = 0u;
     packbits_staging_size = 0u;
     packbits_staging_offset = 0u;
+}
+
+void p2000t_usb_stream_queue_configuration(const uint8_t *payload,
+                                            uint32_t payload_size) {
+    hard_assert(payload != NULL);
+    hard_assert(payload_size == sizeof(pending_configuration));
+    memcpy(pending_configuration, payload, sizeof(pending_configuration));
+    configuration_pending = true;
 }
 
 bool p2000t_usb_stream_active(void) {
@@ -323,7 +378,9 @@ void p2000t_usb_stream_service(bool signal_present,
             source = &packbits_staging[packbits_staging_offset];
             remaining = packbits_staging_size - packbits_staging_offset;
         } else {
-            source = &stream_frame[tx_payload_offset];
+            source = tx_configuration
+                         ? &tx_configuration_payload[tx_payload_offset]
+                         : &stream_frame[tx_payload_offset];
             remaining = tx_payload_size - tx_payload_offset;
         }
 
@@ -350,7 +407,7 @@ void p2000t_usb_stream_service(bool signal_present,
 
         if (tx_header_offset == P2000T_STREAM_HEADER_SIZE &&
             tx_payload_offset == tx_payload_size) {
-            if (tx_signal_present && last_sequence_valid &&
+            if (!tx_configuration && tx_signal_present && last_sequence_valid &&
                 last_display_state_valid && last_signal_present &&
                 (uint32_t)(tx_sequence - last_sequence) >
                     STREAM_SEQUENCE_STEP) {
@@ -358,26 +415,28 @@ void p2000t_usb_stream_service(bool signal_present,
                     (uint32_t)(tx_sequence - last_sequence) -
                     STREAM_SEQUENCE_STEP;
             }
-            if (tx_signal_present) {
+            if (!tx_configuration && tx_signal_present) {
                 last_sequence = tx_sequence;
                 last_sequence_valid = true;
             }
-            last_signal_present = tx_signal_present;
-            last_no_signal_artwork = tx_no_signal_artwork;
-            last_display_state_valid = true;
-            if (!tx_signal_present) {
-                ++stream_stats.no_signal_records_sent;
-            } else {
-                ++stream_stats.frames_sent;
-                if (tx_packbits) {
-                    ++stream_stats.packbits_frames_sent;
+            if (!tx_configuration) {
+                last_signal_present = tx_signal_present;
+                last_no_signal_artwork = tx_no_signal_artwork;
+                last_display_state_valid = true;
+                if (!tx_signal_present) {
+                    ++stream_stats.no_signal_records_sent;
                 } else {
-                    ++stream_stats.raw_frames_sent;
+                    ++stream_stats.frames_sent;
+                    if (tx_packbits) {
+                        ++stream_stats.packbits_frames_sent;
+                    } else {
+                        ++stream_stats.raw_frames_sent;
+                    }
                 }
+                stream_stats.last_payload_size = (uint32_t)tx_payload_size;
             }
             stream_stats.bytes_sent +=
                 P2000T_STREAM_HEADER_SIZE + tx_payload_size;
-            stream_stats.last_payload_size = (uint32_t)tx_payload_size;
             stream_stats.last_encode_us = tx_encode_us;
             if (stream_stats.last_encode_us >
                 stream_stats.maximum_encode_us) {

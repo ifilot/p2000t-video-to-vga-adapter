@@ -12,11 +12,15 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "hardware/clocks.h"
 #include "hardware/vreg.h"
 #include "p2000t_capture.h"
+#include "p2000t_control_protocol.h"
+#include "p2000t_settings.h"
 #include "p2000t_video_renderer.h"
+#include "pico/flash.h"
 #include "pico/multicore.h"
 #include "pico/scanvideo.h"
 #include "pico/stdio_usb.h"
@@ -133,6 +137,30 @@ static vga_statistics_t vga_statistics = {
 static volatile uint32_t requested_no_signal_artwork =
     P2000T_NO_SIGNAL_ARTWORK_DEFAULT;
 
+/** Active and last successfully persisted user configuration. */
+static p2000t_settings_t current_settings;
+static p2000t_settings_t stored_settings;
+static bool stored_settings_valid;
+static bool settings_save_failed;
+
+/** Incremental structured-control packet receiver. */
+static uint8_t control_packet[P2000T_CONTROL_PACKET_SIZE];
+static unsigned control_packet_offset;
+
+_Static_assert((int)P2000T_CONTROL_MIN_VERTICAL ==
+                       (int)P2000T_MIN_FIRST_VISIBLE_SCANLINE &&
+                   (int)P2000T_CONTROL_MAX_VERTICAL ==
+                       (int)P2000T_MAX_FIRST_VISIBLE_SCANLINE &&
+                   (int)P2000T_CONTROL_MIN_PHASE ==
+                       (int)P2000T_MIN_SAMPLE_PHASE &&
+                   (int)P2000T_CONTROL_MAX_PHASE ==
+                       (int)P2000T_MAX_SAMPLE_PHASE &&
+                   (int)P2000T_CONTROL_MIN_HORIZONTAL ==
+                       (int)P2000T_MIN_HORIZONTAL_OFFSET &&
+                   (int)P2000T_CONTROL_MAX_HORIZONTAL ==
+                       (int)P2000T_MAX_HORIZONTAL_OFFSET,
+               "Control protocol limits must match capture limits");
+
 /**
  * @brief Increment a diagnostic counter owned exclusively by the VGA core.
  *
@@ -175,6 +203,7 @@ static inline void store_statistic(volatile uint32_t *destination,
  */
 static void select_frame_for_next_vga_frame(void) {
     increment_counter(&vga_statistics.generated_frames);
+    p2000t_video_renderer_begin_frame();
     display_state.no_signal_artwork = (p2000t_no_signal_artwork_t)
         load_statistic(&requested_no_signal_artwork);
     display_state.signal_present = p2000t_capture_signal_present();
@@ -258,6 +287,7 @@ static void render_scanline(scanvideo_scanline_buffer_t *scanline_buffer) {
  * This function signals core 0 once it is running and then never returns.
  */
 static void __not_in_flash_func(vga_core_main)(void) {
+    hard_assert(flash_safe_execute_core_init());
     multicore_fifo_push_blocking(VGA_READY_MAGIC);
     while (true) {
         scanvideo_scanline_buffer_t *scanline_buffer =
@@ -361,6 +391,7 @@ static void select_no_signal_artwork(p2000t_no_signal_artwork_t artwork,
                                      bool quiet) {
     hard_assert((unsigned)artwork < P2000T_NO_SIGNAL_ARTWORK_COUNT);
     store_statistic(&requested_no_signal_artwork, (uint32_t)artwork);
+    current_settings.no_signal_artwork = (uint8_t)artwork;
     static const char *const names[P2000T_NO_SIGNAL_ARTWORK_COUNT] = {
         "green phosphor", "synthwave", "amber circuit"};
     if (!quiet) {
@@ -388,6 +419,7 @@ static void adjust_first_visible_line(int change, bool quiet) {
         }
         return;
     }
+    current_settings.first_visible_scanline = (uint16_t)requested;
     if (!quiet) {
         printf("First visible source scanline set to %d; "
                "applies on the next frame.\n",
@@ -412,6 +444,7 @@ static void adjust_sample_phase(int change, bool quiet) {
         }
         return;
     }
+    current_settings.sample_phase = (int16_t)requested;
     if (!quiet) {
         printf("Sample phase set to %+d (positive is later); "
                "one tick is 7.94 ns and it applies on the next source frame.\n",
@@ -440,6 +473,7 @@ static void adjust_horizontal_offset(int change, bool quiet) {
         }
         return;
     }
+    current_settings.horizontal_offset = (uint16_t)requested;
     if (!quiet) {
         printf("Horizontal start set to %d source dots (%d characters); "
                "applies on the next frame.\n",
@@ -503,6 +537,8 @@ static void handle_usb_command(int command) {
     case '0':
         if (p2000t_capture_set_first_visible_scanline(
                 P2000T_DEFAULT_FIRST_VISIBLE_SCANLINE)) {
+            current_settings.first_visible_scanline =
+                P2000T_DEFAULT_FIRST_VISIBLE_SCANLINE;
             if (!quiet) {
                 printf("First visible source scanline reset to %u.\n",
                        P2000T_DEFAULT_FIRST_VISIBLE_SCANLINE);
@@ -518,6 +554,7 @@ static void handle_usb_command(int command) {
     case 'p':
     case 'P':
         if (p2000t_capture_set_sample_phase(P2000T_DEFAULT_SAMPLE_PHASE)) {
+            current_settings.sample_phase = P2000T_DEFAULT_SAMPLE_PHASE;
             if (!quiet) {
                 printf("Sample phase reset to %d.\n",
                        P2000T_DEFAULT_SAMPLE_PHASE);
@@ -534,6 +571,8 @@ static void handle_usb_command(int command) {
     case 'X':
         if (p2000t_capture_set_horizontal_offset(
                 P2000T_DEFAULT_HORIZONTAL_OFFSET)) {
+            current_settings.horizontal_offset =
+                P2000T_DEFAULT_HORIZONTAL_OFFSET;
             if (!quiet) {
                 printf("Horizontal start reset to %u source dots.\n",
                        P2000T_DEFAULT_HORIZONTAL_OFFSET);
@@ -550,10 +589,179 @@ static void handle_usb_command(int command) {
     }
 }
 
+static uint16_t control_crc16(const uint8_t *data, unsigned length) {
+    uint16_t crc = 0xffffu;
+    for (unsigned index = 0; index < length; ++index) {
+        crc ^= (uint16_t)data[index] << 8u;
+        for (unsigned bit = 0; bit < 8u; ++bit) {
+            crc = (uint16_t)((crc << 1u) ^
+                             ((crc & 0x8000u) != 0u ? 0x1021u : 0u));
+        }
+    }
+    return crc;
+}
+
+static uint16_t control_load_u16(const uint8_t *data) {
+    return (uint16_t)data[0] | ((uint16_t)data[1] << 8u);
+}
+
+static uint32_t control_load_u32(const uint8_t *data) {
+    return (uint32_t)data[0] | ((uint32_t)data[1] << 8u) |
+           ((uint32_t)data[2] << 16u) | ((uint32_t)data[3] << 24u);
+}
+
+#if defined(PICO_RP2350) && PICO_RP2350
+static void control_store_u16(uint8_t *destination, uint16_t value) {
+    destination[0] = (uint8_t)value;
+    destination[1] = (uint8_t)(value >> 8u);
+}
+
+static void queue_configuration_state(void) {
+    uint8_t payload[P2000T_CONFIGURATION_STATE_SIZE] = {0};
+    memcpy(payload, P2000T_CONFIGURATION_STATE_MAGIC, 4u);
+    payload[4] = P2000T_CONFIGURATION_STATE_VERSION;
+    if (stored_settings_valid) {
+        payload[5] |= P2000T_CONFIGURATION_FLAG_STORED_AVAILABLE;
+        if (memcmp(&current_settings, &stored_settings,
+                   sizeof(current_settings)) == 0) {
+            payload[5] |= P2000T_CONFIGURATION_FLAG_MATCHES_STORED;
+        }
+    }
+    if (settings_save_failed) {
+        payload[5] |= P2000T_CONFIGURATION_FLAG_SAVE_FAILED;
+    }
+    control_store_u16(&payload[6], sizeof(payload));
+    control_store_u16(&payload[8],
+                      current_settings.first_visible_scanline);
+    control_store_u16(&payload[10],
+                      (uint16_t)current_settings.sample_phase);
+    control_store_u16(&payload[12], current_settings.horizontal_offset);
+    payload[14] = current_settings.no_signal_artwork;
+    for (unsigned index = 0; index < P2000T_CONTROL_PALETTE_COLORS; ++index) {
+        control_store_u16(
+            &payload[P2000T_CONFIGURATION_PALETTE_OFFSET + index * 2u],
+            current_settings.palette[index]);
+    }
+    p2000t_usb_stream_queue_configuration(payload, sizeof(payload));
+}
+#endif
+
+static void apply_settings(const p2000t_settings_t *settings) {
+    hard_assert(p2000t_settings_valid(settings));
+    current_settings = *settings;
+    p2000t_capture_set_first_visible_scanline(
+        current_settings.first_visible_scanline);
+    p2000t_capture_set_sample_phase(current_settings.sample_phase);
+    p2000t_capture_set_horizontal_offset(current_settings.horizontal_offset);
+    store_statistic(&requested_no_signal_artwork,
+                    current_settings.no_signal_artwork);
+    p2000t_video_renderer_set_source_palette(current_settings.palette);
+}
+
+static void handle_control_packet(void) {
+    const uint8_t opcode = control_packet[3];
+    const uint8_t argument = control_packet[4];
+    const uint32_t value = control_load_u32(&control_packet[6]);
+    switch (opcode) {
+    case P2000T_CONTROL_GET_SETTINGS:
+        break;
+    case P2000T_CONTROL_SET_VERTICAL:
+        if (value >= P2000T_CONTROL_MIN_VERTICAL &&
+            value <= P2000T_CONTROL_MAX_VERTICAL &&
+            p2000t_capture_set_first_visible_scanline((unsigned)value)) {
+            current_settings.first_visible_scanline = (uint16_t)value;
+        }
+        break;
+    case P2000T_CONTROL_SET_PHASE: {
+        const int32_t phase = (int32_t)value;
+        if (phase >= P2000T_CONTROL_MIN_PHASE &&
+            phase <= P2000T_CONTROL_MAX_PHASE &&
+            p2000t_capture_set_sample_phase((int)phase)) {
+            current_settings.sample_phase = (int16_t)phase;
+        }
+        break;
+    }
+    case P2000T_CONTROL_SET_HORIZONTAL:
+        if (value <= P2000T_CONTROL_MAX_HORIZONTAL &&
+            value % P2000T_CONTROL_HORIZONTAL_STEP == 0u &&
+            p2000t_capture_set_horizontal_offset((unsigned)value)) {
+            current_settings.horizontal_offset = (uint16_t)value;
+        }
+        break;
+    case P2000T_CONTROL_SET_ARTWORK:
+        if (value < P2000T_NO_SIGNAL_ARTWORK_COUNT) {
+            current_settings.no_signal_artwork = (uint8_t)value;
+            store_statistic(&requested_no_signal_artwork, value);
+        }
+        break;
+    case P2000T_CONTROL_SET_PALETTE:
+        if (argument < P2000T_CONTROL_PALETTE_COLORS &&
+            value <= P2000T_CONTROL_RGB444_MAX) {
+            current_settings.palette[argument] = (uint16_t)value;
+            p2000t_video_renderer_set_source_palette(
+                current_settings.palette);
+        }
+        break;
+    case P2000T_CONTROL_SAVE_SETTINGS:
+        settings_save_failed = !p2000t_settings_save(&current_settings);
+        if (!settings_save_failed) {
+            stored_settings = current_settings;
+            stored_settings_valid = true;
+        }
+        break;
+    case P2000T_CONTROL_LOAD_SETTINGS:
+        if (stored_settings_valid) {
+            apply_settings(&stored_settings);
+        }
+        break;
+    case P2000T_CONTROL_FACTORY_DEFAULTS: {
+        p2000t_settings_t defaults;
+        p2000t_settings_defaults(&defaults);
+        apply_settings(&defaults);
+        break;
+    }
+    default:
+        return;
+    }
+#if defined(PICO_RP2350) && PICO_RP2350
+    if (p2000t_usb_stream_active()) {
+        queue_configuration_state();
+    }
+#endif
+}
+
+static bool consume_control_byte(uint8_t byte) {
+    if (control_packet_offset == 0u) {
+        if (byte != P2000T_CONTROL_MAGIC_0) {
+            return false;
+        }
+        control_packet[control_packet_offset++] = byte;
+        return true;
+    }
+    if (control_packet_offset == 1u && byte != P2000T_CONTROL_MAGIC_1) {
+        control_packet_offset = byte == P2000T_CONTROL_MAGIC_0 ? 1u : 0u;
+        return true;
+    }
+    control_packet[control_packet_offset++] = byte;
+    if (control_packet_offset != P2000T_CONTROL_PACKET_SIZE) {
+        return true;
+    }
+    control_packet_offset = 0u;
+    if (control_packet[2] == P2000T_CONTROL_VERSION &&
+        control_load_u16(&control_packet[P2000T_CONTROL_CRC_OFFSET]) ==
+            control_crc16(control_packet, P2000T_CONTROL_CRC_OFFSET)) {
+        handle_control_packet();
+    }
+    return true;
+}
+
 /** @brief Drain and execute all currently buffered USB commands. */
 static void poll_usb_commands(void) {
     int command;
     while ((command = getchar_timeout_us(0)) != PICO_ERROR_TIMEOUT) {
+        if (consume_control_byte((uint8_t)command)) {
+            continue;
+        }
 #if defined(PICO_RP2350) && PICO_RP2350
         if (p2000t_usb_stream_active()) {
             const bool stream_command =
@@ -621,7 +829,13 @@ static void configure_system_clock(void) {
 int main(void) {
     configure_system_clock();
     stdio_init_all();
+    p2000t_settings_defaults(&current_settings);
+    stored_settings_valid = p2000t_settings_load(&stored_settings);
+    if (stored_settings_valid) {
+        current_settings = stored_settings;
+    }
     p2000t_video_renderer_initialize();
+    p2000t_video_renderer_set_source_palette(current_settings.palette);
 
     /* Scanvideo owns PIO0 and its fixed DMA channel. Capture then claims PIO1
        and two otherwise-unused DMA channels. */
@@ -629,6 +843,12 @@ int main(void) {
         panic("Unable to initialize VGA scanvideo");
     }
     p2000t_capture_start();
+    p2000t_capture_set_first_visible_scanline(
+        current_settings.first_visible_scanline);
+    p2000t_capture_set_sample_phase(current_settings.sample_phase);
+    p2000t_capture_set_horizontal_offset(current_settings.horizontal_offset);
+    store_statistic(&requested_no_signal_artwork,
+                    current_settings.no_signal_artwork);
     multicore_launch_core1(vga_core_main);
     if (multicore_fifo_pop_blocking() != VGA_READY_MAGIC) {
         panic("Unable to start VGA rendering core");

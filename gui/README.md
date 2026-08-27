@@ -16,11 +16,14 @@ Linux desktop-inspired icon set embedded in the same resource bundle.
 
 When launched, the viewer attempts to connect to the first detected Pico USB
 CDC port and start the selected stream encoding. Manual port refresh and
-connect/disconnect controls remain available. The Adapter > Configure Pico 2
-menu exposes every capture-alignment and no-connection-artwork command while
-streaming; these controls require firmware containing the matching support for
-silent commands in binary mode. File > Exit and Help > About provide the
-standard application menu entries.
+connect/disconnect controls remain available. Adapter > Configure Pico 2 opens
+a modal with exact spin boxes for capture alignment, an artwork selector, and
+eight RGB444 color rows with channel spinners and color pickers. Apply previews
+the values, Reload from Pico retrieves the saved flash copy, Factory defaults
+restores firmware defaults, and Save to Pico writes a CRC-protected persistent
+copy. These controls require firmware containing the matching structured
+control protocol. File > Exit and Help > About provide the standard application
+menu entries.
 
 The firmware command `c` starts the recommended PackBits stream, `r` starts a
 raw stream, and `q` returns it to the normal USB console. Streaming is currently
@@ -50,14 +53,16 @@ self-contained development directory with the required Qt DLLs:
 mkdir -p build-gui/package
 cp build-gui/p2000t-vid2vga-capture.exe build-gui/package/
 windeployqt6 --release --no-translations \
+  --exclude-plugins qpdf,qsvg,qsvgicon \
   build-gui/package/p2000t-vid2vga-capture.exe
 ```
 
 MSYS2 runtime DLLs reported by `ldd` may also need to be copied into the
 package when it will run outside an MSYS2 UCRT64 environment. Redistributed Qt
 DLLs must be accompanied by their corresponding terms from
-`/ucrt64/share/licenses/qt6-base` and any additional Qt modules selected by
-`windeployqt6`. GitHub Actions performs both steps for the release ZIP.
+`/ucrt64/share/licenses/qt6-base`. The SVG and PDF plugins are excluded because
+the viewer does not use them. GitHub Actions performs both steps for the
+release ZIP.
 
 ## Windows graphical installer
 

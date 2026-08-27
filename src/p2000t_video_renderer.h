@@ -45,6 +45,12 @@ typedef enum {
  */
 void p2000t_video_renderer_initialize(void);
 
+/** Build and queue an eight-entry RGB444 source palette. */
+void p2000t_video_renderer_set_source_palette(const uint16_t colors[8]);
+
+/** Adopt the newest complete source palette at a VGA frame boundary. */
+void p2000t_video_renderer_begin_frame(void);
+
 /**
  * @brief Render one captured source line into a scanvideo buffer.
  *

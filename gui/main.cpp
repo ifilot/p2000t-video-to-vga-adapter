@@ -13,7 +13,6 @@
 
 #include <QApplication>
 #include <QAction>
-#include <QActionGroup>
 #include <QByteArray>
 #include <QComboBox>
 #include <QElapsedTimer>
@@ -36,8 +35,10 @@
 #include <QWidget>
 
 #include "adapter_serial_port.h"
+#include "configuration_dialog.h"
 #include "no_signal_screen.h"
 #include "p2000t_packbits.h"
+#include "pico_configuration.h"
 #include "p2000t_stream_protocol.h"
 
 namespace {
@@ -193,71 +194,12 @@ private:
                 [this] { refreshPorts(); });
         adapter->addSeparator();
 
-        configuration_menu_ = adapter->addMenu(
+        configuration_action_ = adapter->addAction(
             QIcon(QStringLiteral(":/icons/retro/configure.png")),
-            QStringLiteral("&Configure Pico 2"));
-        auto addCommand = [this](QMenu *menu, const QString &text,
-                                 char command, const QString &description) {
-            QAction *action = menu->addAction(text);
-            connect(action, &QAction::triggered, this,
-                    [this, command, description] {
-                        sendConfigurationCommand(command, description);
-                    });
-            return action;
-        };
-
-        auto *vertical = configuration_menu_->addMenu(
-            QStringLiteral("&Vertical position"));
-        addCommand(vertical, QStringLiteral("Move &up"), '[',
-                   QStringLiteral("Vertical image position moved up"));
-        addCommand(vertical, QStringLiteral("Move &down"), ']',
-                   QStringLiteral("Vertical image position moved down"));
-        vertical->addSeparator();
-        addCommand(vertical, QStringLiteral("&Reset"), '0',
-                   QStringLiteral("Vertical image position reset"));
-
-        auto *phase = configuration_menu_->addMenu(
-            QStringLiteral("&Sample phase"));
-        addCommand(phase, QStringLiteral("Sample &earlier"), ',',
-                   QStringLiteral("Sample phase moved earlier"));
-        addCommand(phase, QStringLiteral("Sample &later"), '.',
-                   QStringLiteral("Sample phase moved later"));
-        phase->addSeparator();
-        addCommand(phase, QStringLiteral("&Reset"), 'p',
-                   QStringLiteral("Sample phase reset"));
-
-        auto *horizontal = configuration_menu_->addMenu(
-            QStringLiteral("&Horizontal start"));
-        addCommand(horizontal, QStringLiteral("Start &earlier"), '<',
-                   QStringLiteral("Horizontal capture starts earlier"));
-        addCommand(horizontal, QStringLiteral("Start &later"), '>',
-                   QStringLiteral("Horizontal capture starts later"));
-        horizontal->addSeparator();
-        addCommand(horizontal, QStringLiteral("&Reset"), 'x',
-                   QStringLiteral("Horizontal capture start reset"));
-
-        auto *artwork = configuration_menu_->addMenu(
-            QStringLiteral("&No-connection artwork"));
-        auto *artworkGroup = new QActionGroup(this);
-        artworkGroup->setExclusive(true);
-        const std::array<QString, P2000T_STREAM_ARTWORK_COUNT> names = {
-            QStringLiteral("&Green phosphor"),
-            QStringLiteral("&Synthwave"),
-            QStringLiteral("&Amber circuit")};
-        for (int index = 0; index < P2000T_STREAM_ARTWORK_COUNT; ++index) {
-            QAction *action = artwork->addAction(names[index]);
-            action->setCheckable(true);
-            artworkGroup->addAction(action);
-            artwork_actions_[static_cast<size_t>(index)] = action;
-            connect(action, &QAction::triggered, this, [this, index] {
-                sendConfigurationCommand(
-                    static_cast<char>('1' + index),
-                    QStringLiteral("No-connection artwork: %1")
-                        .arg(p2000tArtworkName(static_cast<quint8>(index))));
-            });
-        }
-        artwork_actions_[P2000T_STREAM_ARTWORK_AMBER_CIRCUIT]->setChecked(true);
-        configuration_menu_->setEnabled(false);
+            QStringLiteral("&Configure Pico 2..."));
+        connect(configuration_action_, &QAction::triggered, this,
+                [this] { openConfigurationDialog(); });
+        configuration_action_->setEnabled(false);
 
         auto *help = menuBar()->addMenu(QStringLiteral("&Help"));
         auto *about = help->addAction(
@@ -323,7 +265,7 @@ private:
         encoding_->setEnabled(false);
         connect_->setText(QStringLiteral("Disconnect"));
         connect_action_->setText(QStringLiteral("&Disconnect"));
-        configuration_menu_->setEnabled(true);
+        configuration_action_->setEnabled(false);
         poll_timer_.start();
         statusBar()->showMessage(QStringLiteral("Initializing %1...").arg(port));
 
@@ -334,7 +276,10 @@ private:
                 return;
             }
             const char command = static_cast<char>(encoding_->currentData().toInt());
-            if (!serial_.write(QByteArray(1, command))) {
+            QByteArray request(1, command);
+            request.append(makePicoControlPacket(
+                P2000T_CONTROL_GET_SETTINGS));
+            if (!serial_.write(request)) {
                 connectionLost();
             }
         });
@@ -342,6 +287,9 @@ private:
     }
 
     void disconnectAdapter() {
+        if (configuration_dialog_ != nullptr) {
+            configuration_dialog_->reject();
+        }
         if (serial_.isOpen()) {
             serial_.write(QByteArray(1, 'q'));
         }
@@ -354,19 +302,73 @@ private:
         connect_->setEnabled(ports_->count() != 0);
         connect_action_->setText(QStringLiteral("&Connect"));
         connect_action_->setEnabled(ports_->count() != 0);
-        configuration_menu_->setEnabled(false);
+        configuration_action_->setEnabled(false);
         statusBar()->showMessage(QStringLiteral("Disconnected"));
     }
 
-    void sendConfigurationCommand(char command, const QString &description) {
+    bool sendControl(const QByteArray &packets) {
         if (!connected_) {
-            return;
+            return false;
         }
-        if (!serial_.write(QByteArray(1, command))) {
+        if (!serial_.write(packets)) {
             connectionLost();
-            return;
+            return false;
         }
-        statusBar()->showMessage(description, 2000);
+        return true;
+    }
+
+    void sendConfiguration(const PicoConfiguration &configuration,
+                           bool save) {
+        QByteArray packets;
+        packets += makePicoControlPacket(P2000T_CONTROL_SET_VERTICAL, 0,
+                                         configuration.vertical);
+        packets += makePicoControlPacket(
+            P2000T_CONTROL_SET_PHASE, 0,
+            static_cast<quint32>(static_cast<qint32>(configuration.phase)));
+        packets += makePicoControlPacket(P2000T_CONTROL_SET_HORIZONTAL, 0,
+                                         configuration.horizontal);
+        packets += makePicoControlPacket(P2000T_CONTROL_SET_ARTWORK, 0,
+                                         configuration.artwork);
+        for (int index = 0; index < P2000T_CONTROL_PALETTE_COLORS; ++index) {
+            packets += makePicoControlPacket(
+                P2000T_CONTROL_SET_PALETTE, static_cast<quint8>(index),
+                configuration.palette[static_cast<size_t>(index)]);
+        }
+        if (save) {
+            packets += makePicoControlPacket(P2000T_CONTROL_SAVE_SETTINGS);
+        }
+        if (sendControl(packets)) {
+            statusBar()->showMessage(
+                save ? QStringLiteral("Settings saved to Pico flash")
+                     : QStringLiteral("Settings applied to Pico"),
+                2500);
+        }
+    }
+
+    void openConfigurationDialog() {
+        ConfigurationDialog dialog(configuration_, this);
+        configuration_dialog_ = &dialog;
+        connect(&dialog, &ConfigurationDialog::applyRequested, this,
+                [this](const PicoConfiguration &configuration) {
+                    sendConfiguration(configuration, false);
+                });
+        connect(&dialog, &ConfigurationDialog::saveRequested, this,
+                [this](const PicoConfiguration &configuration) {
+                    sendConfiguration(configuration, true);
+                });
+        connect(&dialog, &ConfigurationDialog::reloadRequested, this,
+                [this] {
+                    sendControl(makePicoControlPacket(
+                        P2000T_CONTROL_LOAD_SETTINGS));
+                });
+        connect(&dialog, &ConfigurationDialog::defaultsRequested, this,
+                [this] {
+                    sendControl(makePicoControlPacket(
+                        P2000T_CONTROL_FACTORY_DEFAULTS));
+                });
+        sendControl(makePicoControlPacket(P2000T_CONTROL_GET_SETTINGS));
+        dialog.exec();
+        configuration_dialog_ = nullptr;
     }
 
     void connectionLost() {
@@ -422,6 +424,40 @@ private:
                 header[P2000T_STREAM_ARTWORK_OFFSET]);
             const bool signal_present =
                 (flags & P2000T_STREAM_FLAG_SIGNAL_PRESENT) != 0u;
+            const bool configuration_record =
+                encoding == P2000T_STREAM_ENCODING_CONFIGURATION &&
+                (flags & P2000T_STREAM_FLAG_CONFIGURATION_STATE) != 0u;
+            if (configuration_record) {
+                const bool valid_configuration_header =
+                    version == P2000T_STREAM_PROTOCOL_VERSION &&
+                    header_size == P2000T_STREAM_HEADER_SIZE &&
+                    payload_size == P2000T_CONFIGURATION_STATE_SIZE &&
+                    uncompressed_size == P2000T_CONFIGURATION_STATE_SIZE;
+                if (!valid_configuration_header) {
+                    receive_buffer_.remove(0, 1);
+                    continue;
+                }
+                const qsizetype record_size =
+                    static_cast<qsizetype>(header_size) + payload_size;
+                if (receive_buffer_.size() < record_size) {
+                    return;
+                }
+                const QByteArray payload = receive_buffer_.mid(
+                    header_size, static_cast<qsizetype>(payload_size));
+                receive_buffer_.remove(0, record_size);
+                PicoConfiguration configuration;
+                if (crc32(payload) != expected_crc ||
+                    !decodePicoConfiguration(payload, &configuration)) {
+                    ++crc_errors_;
+                    continue;
+                }
+                configuration_ = configuration;
+                configuration_action_->setEnabled(true);
+                if (configuration_dialog_ != nullptr) {
+                    configuration_dialog_->setConfiguration(configuration_);
+                }
+                continue;
+            }
             const quint16 required_flags =
                 P2000T_STREAM_FLAG_PLANAR_RGB111 |
                 P2000T_STREAM_FLAG_PIXELS_MSB_FIRST;
@@ -498,16 +534,19 @@ private:
             for (int x = 0; x < P2000T_STREAM_WIDTH; ++x) {
                 const int index = row + x / 8;
                 const unsigned mask = 0x80u >> (x & 7);
-                const int red = (planes[index] & mask) != 0u ? 255 : 0;
-                const int green =
-                    (planes[P2000T_STREAM_PLANE_SIZE + index] & mask) != 0u
-                        ? 255
-                        : 0;
-                const int blue =
-                    (planes[2 * P2000T_STREAM_PLANE_SIZE + index] & mask) != 0u
-                        ? 255
-                        : 0;
-                first[x] = qRgb(red, green, blue);
+                const unsigned colorIndex =
+                    ((planes[index] & mask) != 0u ? 1u : 0u) |
+                    ((planes[P2000T_STREAM_PLANE_SIZE + index] & mask) != 0u
+                         ? 2u
+                         : 0u) |
+                    ((planes[2 * P2000T_STREAM_PLANE_SIZE + index] & mask) !=
+                             0u
+                         ? 4u
+                         : 0u);
+                const quint16 color = configuration_.palette[colorIndex];
+                first[x] = qRgb((color & 0x0fu) * 17,
+                                ((color >> 4u) & 0x0fu) * 17,
+                                ((color >> 8u) & 0x0fu) * 17);
                 second[x] = first[x];
             }
         }
@@ -524,9 +563,7 @@ private:
 
     void updateStatus(quint32 sequence, quint32 payload_size,
                       bool signal_present, quint8 artwork) {
-        if (artwork < artwork_actions_.size()) {
-            artwork_actions_[artwork]->setChecked(true);
-        }
+        configuration_.artwork = artwork;
         if (!signal_present) {
             statusBar()->showMessage(
                 QStringLiteral("%1 | no P2000T signal | VGA screen: %2")
@@ -572,8 +609,9 @@ private:
     QPushButton *save_ = nullptr;
     FrameView *view_ = nullptr;
     QAction *connect_action_ = nullptr;
-    QMenu *configuration_menu_ = nullptr;
-    std::array<QAction *, P2000T_STREAM_ARTWORK_COUNT> artwork_actions_ = {};
+    QAction *configuration_action_ = nullptr;
+    ConfigurationDialog *configuration_dialog_ = nullptr;
+    PicoConfiguration configuration_;
     QByteArray receive_buffer_;
     QImage current_frame_;
     bool connected_ = false;

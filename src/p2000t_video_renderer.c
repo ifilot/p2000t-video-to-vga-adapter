@@ -50,13 +50,15 @@ extern const uint8_t no_connection_image_green_phosphor[];
 extern const uint8_t no_connection_image_synthwave[];
 extern const uint8_t no_connection_image_amber_circuit[];
 
-/** Full-scale RGB444 colors in P2000T bit order R=1, G=2, B=4. */
-static const uint16_t source_colors[8] = {
+/** Default RGB444 colors in P2000T bit order R=1, G=2, B=4. */
+static const uint16_t default_source_colors[8] = {
     0x0000, 0x000f, 0x00f0, 0x00ff, 0x0f00, 0x0f0f, 0x0ff0, 0x0fff,
 };
 
-/** Two decoded RGB444 pixels for every packed pair of raw input nibbles. */
-static uint32_t raw_byte_colors[256];
+/** Triple-buffered decoded colors for frame-atomic palette updates. */
+static uint32_t raw_byte_color_tables[3][256];
+static volatile uint32_t requested_raw_color_table;
+static volatile uint32_t active_raw_color_table;
 
 /** Two RGB444 pixels for each packed pair in each artwork palette. */
 static uint32_t
@@ -211,20 +213,27 @@ static void __not_in_flash_func(render_no_signal_icon)(uint16_t *tokens,
     }
 }
 
-void p2000t_video_renderer_initialize(void) {
+static void build_source_color_table(uint32_t *table,
+                                     const uint16_t colors[8]) {
     uint16_t raw_nibble_colors[16];
     for (unsigned raw = 0; raw < 16u; ++raw) {
         const unsigned color =
             ((((raw >> P2000T_RED_CHANNEL) & 1u) == 0u) ? 1u : 0u) |
             ((((raw >> P2000T_GREEN_CHANNEL) & 1u) == 0u) ? 2u : 0u) |
             ((((raw >> P2000T_BLUE_CHANNEL) & 1u) == 0u) ? 4u : 0u);
-        raw_nibble_colors[raw] = source_colors[color];
+        raw_nibble_colors[raw] = colors[color];
     }
     for (unsigned raw = 0; raw < 256u; ++raw) {
-        raw_byte_colors[raw] =
+        table[raw] =
             raw_nibble_colors[raw >> 4u] |
             ((uint32_t)raw_nibble_colors[raw & 0x0fu] << 16u);
     }
+}
+
+void p2000t_video_renderer_initialize(void) {
+    build_source_color_table(raw_byte_color_tables[0], default_source_colors);
+    requested_raw_color_table = 0u;
+    active_raw_color_table = 0u;
 
     /* Expand all three tiny flash-resident palettes into SRAM. Selection can
      * then change at a frame boundary without rebuilding a table or adding
@@ -239,6 +248,27 @@ void p2000t_video_renderer_initialize(void) {
                 ((uint32_t)palette[packed & 0x0fu] << 16u);
         }
     }
+}
+
+void p2000t_video_renderer_set_source_palette(const uint16_t colors[8]) {
+    hard_assert(colors != NULL);
+    const uint32_t active =
+        __atomic_load_n(&active_raw_color_table, __ATOMIC_ACQUIRE);
+    const uint32_t requested =
+        __atomic_load_n(&requested_raw_color_table, __ATOMIC_ACQUIRE);
+    uint32_t next = 0u;
+    while (next == active || next == requested) {
+        ++next;
+    }
+    hard_assert(next < 3u);
+    build_source_color_table(raw_byte_color_tables[next], colors);
+    __atomic_store_n(&requested_raw_color_table, next, __ATOMIC_RELEASE);
+}
+
+void p2000t_video_renderer_begin_frame(void) {
+    const uint32_t requested =
+        __atomic_load_n(&requested_raw_color_table, __ATOMIC_ACQUIRE);
+    __atomic_store_n(&active_raw_color_table, requested, __ATOMIC_RELEASE);
 }
 
 void __not_in_flash_func(p2000t_video_render_no_signal_scanline)(
@@ -302,6 +332,8 @@ void __not_in_flash_func(p2000t_video_render_source_scanline)(
         *destination++ = 0x0000;
     }
     const uint32_t *source = frame + source_y * P2000T_CAPTURE_WORDS_PER_LINE;
+    const uint32_t *raw_byte_colors = raw_byte_color_tables[
+        __atomic_load_n(&active_raw_color_table, __ATOMIC_RELAXED)];
     hard_assert(((uintptr_t)destination & 3u) == 0u);
     uint32_t *packed_destination = (uint32_t *)destination;
     for (unsigned word_index = 0; word_index < P2000T_CAPTURE_WORDS_PER_LINE;

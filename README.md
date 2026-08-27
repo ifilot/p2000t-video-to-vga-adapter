@@ -100,9 +100,12 @@ The compact Qt 6 application in [`gui`](gui/) discovers Pico USB CDC ports,
 starts the 480×240 RGB111 stream, validates CRC-32, displays complete frames,
 and saves lossless PNG captures. At startup it attempts to connect to the first
 detected Pico port automatically. Its Adapter menu can adjust vertical
-position, sample phase, horizontal start, and no-connection artwork while the
-screen stream remains active. File > Exit and Help > About provide standard
-desktop application actions. Each source scanline is duplicated exactly, so
+position, sample phase, horizontal start, no-connection artwork, and all eight
+RGB444 source colors while the screen stream remains active. The interactive
+configuration dialog uses exact numeric controls, can restore the last saved
+configuration, and can persist the current settings in CRC-protected Pico
+flash for the next boot. File > Exit and Help > About provide standard desktop
+application actions. Each source scanline is duplicated exactly, so
 the 480×240 logical source is shown and saved as a square-pixel 480×480 image.
 PackBits is selected per frame only when it is smaller than the 43,200-byte raw
 payload. USB backpressure can reduce the frame rate, but it cannot expose a DMA
@@ -145,6 +148,12 @@ CRC-32. The reconstructed payload contains three 14,400-byte, MSB-first
 bitplanes in red, green, blue order. No-signal state records have no payload.
 Records are independently recoverable, so a viewer can resynchronize after
 opening a port mid-stream.
+
+Structured 12-byte control packets coexist with the original one-character
+terminal commands. Configuration replies use independently framed `P2TF`
+records with a CRC-32-protected 32-byte state payload. Palette lookup tables
+are triple-buffered so a new eight-color palette is adopted at a VGA frame
+boundary rather than partway through a frame.
 
 ## License
 

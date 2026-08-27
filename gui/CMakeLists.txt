@@ -19,8 +19,12 @@ qt_add_executable(p2000t-vid2vga-capture
     main.cpp
     adapter_serial_port.cpp
     adapter_serial_port.h
+    configuration_dialog.cpp
+    configuration_dialog.h
     no_signal_screen.cpp
     no_signal_screen.h
+    pico_configuration.cpp
+    pico_configuration.h
     resources.qrc
 )
 
@@ -64,6 +68,22 @@ if(BUILD_TESTING)
             -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME packbits-round-trip COMMAND p2000t-packbits-test)
+
+    add_executable(p2000t-configuration-protocol-test
+        ../tests/configuration_protocol_test.cpp
+        pico_configuration.cpp
+        pico_configuration.h
+    )
+    target_include_directories(p2000t-configuration-protocol-test PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}
+        ${CMAKE_CURRENT_LIST_DIR}/../src)
+    target_link_libraries(p2000t-configuration-protocol-test PRIVATE Qt6::Core)
+    if(NOT MSVC)
+        target_compile_options(p2000t-configuration-protocol-test PRIVATE
+            -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME configuration-protocol
+        COMMAND p2000t-configuration-protocol-test)
 
     qt_add_executable(p2000t-no-signal-screen-test
         ../tests/no_signal_screen_test.cpp

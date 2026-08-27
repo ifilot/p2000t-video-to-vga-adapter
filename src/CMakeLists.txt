@@ -35,6 +35,7 @@ add_executable(${FIRMWARE_TARGET}
     firmware.c
     ${NO_CONNECTION_IMAGE_ASSEMBLIES}
     p2000t_capture.c
+    p2000t_settings.c
     p2000t_video_renderer.c
 )
 
@@ -62,9 +63,11 @@ target_link_libraries(${FIRMWARE_TARGET} PRIVATE
     pico_stdlib
     pico_stdio_usb
     pico_multicore
+    pico_flash
     pico_scanvideo_dpi
     hardware_clocks
     hardware_dma
+    hardware_flash
     hardware_pio
     hardware_sync
     hardware_vreg
@@ -107,6 +110,7 @@ endif()
 set_source_files_properties(
     firmware.c
     p2000t_capture.c
+    p2000t_settings.c
     p2000t_video_renderer.c
     PROPERTIES
     COMPILE_OPTIONS "-Wall;-Wextra;-Wpedantic"

@@ -21,7 +21,7 @@ jobs:
 
     steps:
       - name: Check out firmware
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Arm build tools
         run: |
@@ -60,7 +60,7 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install MSYS2 UCRT64 build tools
         uses: msys2/setup-msys2@v2
@@ -77,23 +77,33 @@ jobs:
         shell: pwsh
         run: choco install nsis --yes --no-progress
 
-      - name: Configure, test, and package viewer
+      - name: Configure Windows capture viewer
         shell: msys2 {0}
         run: |
           cmake -S gui -B build-gui -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
-          cmake --build build-gui --parallel
-          ctest --test-dir build-gui --output-on-failure
+
+      - name: Build Windows capture viewer
+        shell: msys2 {0}
+        run: cmake --build build-gui --parallel
+
+      - name: Test Windows capture viewer
+        shell: msys2 {0}
+        run: ctest --test-dir build-gui --output-on-failure
+
+      - name: Deploy Windows capture viewer
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
           mkdir -p dist/viewer
           cp build-gui/p2000t-vid2vga-capture.exe dist/viewer/
           windeployqt6 --release --no-translations \
+            --exclude-plugins qpdf,qsvg,qsvgicon \
             dist/viewer/p2000t-vid2vga-capture.exe
           cp gui/README.md dist/viewer/README.md
           mkdir -p dist/viewer/licenses
           cp LICENSES/GPL-3.0-or-later.txt dist/viewer/licenses/
           cp -R /ucrt64/share/licenses/qt6-base dist/viewer/licenses/
-          cp -R /ucrt64/share/licenses/qt6-svg dist/viewer/licenses/
-          cp -R /ucrt64/share/licenses/qt6-pdf dist/viewer/licenses/
           for pass in 1 2 3; do
             find dist/viewer -type f \( -name '*.exe' -o -name '*.dll' \) \
               -print0 | xargs -0 -r ldd | \

@@ -18,6 +18,10 @@ Notable project changes are recorded here.
   no-connection artwork configuration.
 - Late-1990s Linux desktop-inspired icons for viewer connection,
   configuration, exit, and about actions.
+- Interactive Pico 2 configuration dialog with exact capture-alignment
+  spinners, artwork selection, and eight RGB444 color editors.
+- CRC-protected flash persistence and structured USB request/state packets for
+  saving and retrieving the complete adapter configuration.
 
 ### Changed
 
@@ -38,6 +42,8 @@ Notable project changes are recorded here.
 - The viewer now attempts to connect to the first detected Pico USB port at
   startup, and Pico 2 firmware accepts silent configuration commands without
   interrupting its binary screen stream.
+- Source-color lookup tables are triple-buffered and adopted at VGA frame
+  boundaries so palette changes cannot split a frame between two palettes.
 
 ## 0.2.0 - 2026-08-27
 

@@ -47,6 +47,9 @@ bool p2000t_usb_stream_active(void);
  */
 void p2000t_usb_stream_service(bool signal_present,
                                unsigned no_signal_artwork);
+/** Queue the newest configuration state as a framed stream record. */
+void p2000t_usb_stream_queue_configuration(const uint8_t *payload,
+                                            uint32_t payload_size);
 /** Copy a consistent snapshot of streaming diagnostics. */
 void p2000t_usb_stream_get_stats(p2000t_usb_stream_stats_t *stats);
 
