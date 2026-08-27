@@ -14,6 +14,10 @@ Notable project changes are recorded here.
 - MSYS2/UCRT64 Windows viewer build, test, packaging, and release automation.
 - P2000M-inspired NSIS graphical Windows installer with Program Files
   deployment, shortcuts, upgrade-aware identity, and a standard uninstaller.
+- Viewer menus for application actions and live Pico 2 capture alignment and
+  no-connection artwork configuration.
+- Late-1990s Linux desktop-inspired icons for viewer connection,
+  configuration, exit, and about actions.
 
 ### Changed
 
@@ -31,6 +35,9 @@ Notable project changes are recorded here.
   the multi-resolution Windows executable resources.
 - Windows CI now validates the installer archive and smoke-tests a fresh
   install, same-directory upgrade, and complete uninstall on every commit.
+- The viewer now attempts to connect to the first detected Pico USB port at
+  startup, and Pico 2 firmware accepts silent configuration commands without
+  interrupting its binary screen stream.
 
 ## 0.2.0 - 2026-08-27
 

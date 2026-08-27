@@ -88,20 +88,25 @@ no-connection artwork. Phase 0 is the default.
 
 On Pico 2, `c` starts the recommended continuous PackBits screen stream and
 `r` starts an uncompressed stream. Press `q` or Escape to stop binary mode and
-return to the console. Screen streaming is intentionally excluded from the
-Pico/RP2040 build for now so its limited SRAM and established VGA timing remain
-unchanged.
+return to the console. The alignment and artwork commands remain available
+silently while a binary stream is active, allowing the desktop viewer to
+configure the adapter without interrupting capture. Screen streaming is
+intentionally excluded from the Pico/RP2040 build for now so its limited SRAM
+and established VGA timing remain unchanged.
 
 ## Pico 2 desktop capture viewer
 
 The compact Qt 6 application in [`gui`](gui/) discovers Pico USB CDC ports,
 starts the 480×240 RGB111 stream, validates CRC-32, displays complete frames,
-and saves lossless PNG captures. Each source scanline is duplicated exactly,
-so the 480×240 logical source is shown and saved as a square-pixel 480×480
-image. PackBits is selected per frame only when it is smaller than the
-43,200-byte raw payload. USB backpressure can reduce the frame rate, but it
-cannot expose a DMA buffer that capture is overwriting or make VGA display a
-partial frame.
+and saves lossless PNG captures. At startup it attempts to connect to the first
+detected Pico port automatically. Its Adapter menu can adjust vertical
+position, sample phase, horizontal start, and no-connection artwork while the
+screen stream remains active. File > Exit and Help > About provide standard
+desktop application actions. Each source scanline is duplicated exactly, so
+the 480×240 logical source is shown and saved as a square-pixel 480×480 image.
+PackBits is selected per frame only when it is smaller than the 43,200-byte raw
+payload. USB backpressure can reduce the frame rate, but it cannot expose a DMA
+buffer that capture is overwriting or make VGA display a partial frame.
 
 When the P2000T input signal disappears, the firmware sends a header-only
 state record rather than stale pixels. It identifies the no-connection artwork

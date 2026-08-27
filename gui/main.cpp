@@ -12,6 +12,8 @@
 #include <cstdint>
 
 #include <QApplication>
+#include <QAction>
+#include <QActionGroup>
 #include <QByteArray>
 #include <QComboBox>
 #include <QElapsedTimer>
@@ -20,7 +22,10 @@
 #include <QImage>
 #include <QIcon>
 #include <QLabel>
+#include <QKeySequence>
 #include <QMainWindow>
+#include <QMenu>
+#include <QMenuBar>
 #include <QMessageBox>
 #include <QPainter>
 #include <QPushButton>
@@ -128,6 +133,7 @@ public:
         encoding_->addItem(QStringLiteral("Raw RGB111"), 'r');
         auto *refresh = new QPushButton(QStringLiteral("Refresh"), central);
         connect_ = new QPushButton(QStringLiteral("Connect"), central);
+        connect_->setIcon(QIcon(QStringLiteral(":/icons/retro/connect.png")));
         save_ = new QPushButton(QStringLiteral("Save PNG"), central);
         save_->setEnabled(false);
         controls->addWidget(new QLabel(QStringLiteral("Pico port:"), central));
@@ -142,6 +148,8 @@ public:
         setCentralWidget(central);
         resize(900, 760);
 
+        createMenus();
+
         poll_timer_.setInterval(2);
         connect(&poll_timer_, &QTimer::timeout, this,
                 [this] { pollSerial(); });
@@ -153,12 +161,121 @@ public:
                 [this] { saveFrame(); });
 
         refreshPorts();
-        statusBar()->showMessage(QStringLiteral("Select the Pico 2 USB port"));
+        if (ports_->count() == 0) {
+            statusBar()->showMessage(
+                QStringLiteral("No Pico 2 USB port detected"));
+        } else {
+            statusBar()->showMessage(
+                QStringLiteral("Pico detected; connecting automatically..."));
+            QTimer::singleShot(0, this, [this] { connectAdapter(false); });
+        }
     }
 
     ~CaptureWindow() override { disconnectAdapter(); }
 
 private:
+    void createMenus() {
+        auto *exit = new QAction(
+            QIcon(QStringLiteral(":/icons/retro/exit.png")),
+            QStringLiteral("E&xit"), this);
+        exit->setShortcut(QKeySequence::Quit);
+        connect(exit, &QAction::triggered, this, &QWidget::close);
+        menuBar()->addMenu(QStringLiteral("&File"))->addAction(exit);
+
+        auto *adapter = menuBar()->addMenu(QStringLiteral("&Adapter"));
+        connect_action_ = adapter->addAction(
+            QIcon(QStringLiteral(":/icons/retro/connect.png")),
+            QStringLiteral("&Connect"));
+        connect(connect_action_, &QAction::triggered, this,
+                [this] { toggleConnection(); });
+        auto *refresh = adapter->addAction(QStringLiteral("&Refresh ports"));
+        connect(refresh, &QAction::triggered, this,
+                [this] { refreshPorts(); });
+        adapter->addSeparator();
+
+        configuration_menu_ = adapter->addMenu(
+            QIcon(QStringLiteral(":/icons/retro/configure.png")),
+            QStringLiteral("&Configure Pico 2"));
+        auto addCommand = [this](QMenu *menu, const QString &text,
+                                 char command, const QString &description) {
+            QAction *action = menu->addAction(text);
+            connect(action, &QAction::triggered, this,
+                    [this, command, description] {
+                        sendConfigurationCommand(command, description);
+                    });
+            return action;
+        };
+
+        auto *vertical = configuration_menu_->addMenu(
+            QStringLiteral("&Vertical position"));
+        addCommand(vertical, QStringLiteral("Move &up"), '[',
+                   QStringLiteral("Vertical image position moved up"));
+        addCommand(vertical, QStringLiteral("Move &down"), ']',
+                   QStringLiteral("Vertical image position moved down"));
+        vertical->addSeparator();
+        addCommand(vertical, QStringLiteral("&Reset"), '0',
+                   QStringLiteral("Vertical image position reset"));
+
+        auto *phase = configuration_menu_->addMenu(
+            QStringLiteral("&Sample phase"));
+        addCommand(phase, QStringLiteral("Sample &earlier"), ',',
+                   QStringLiteral("Sample phase moved earlier"));
+        addCommand(phase, QStringLiteral("Sample &later"), '.',
+                   QStringLiteral("Sample phase moved later"));
+        phase->addSeparator();
+        addCommand(phase, QStringLiteral("&Reset"), 'p',
+                   QStringLiteral("Sample phase reset"));
+
+        auto *horizontal = configuration_menu_->addMenu(
+            QStringLiteral("&Horizontal start"));
+        addCommand(horizontal, QStringLiteral("Start &earlier"), '<',
+                   QStringLiteral("Horizontal capture starts earlier"));
+        addCommand(horizontal, QStringLiteral("Start &later"), '>',
+                   QStringLiteral("Horizontal capture starts later"));
+        horizontal->addSeparator();
+        addCommand(horizontal, QStringLiteral("&Reset"), 'x',
+                   QStringLiteral("Horizontal capture start reset"));
+
+        auto *artwork = configuration_menu_->addMenu(
+            QStringLiteral("&No-connection artwork"));
+        auto *artworkGroup = new QActionGroup(this);
+        artworkGroup->setExclusive(true);
+        const std::array<QString, P2000T_STREAM_ARTWORK_COUNT> names = {
+            QStringLiteral("&Green phosphor"),
+            QStringLiteral("&Synthwave"),
+            QStringLiteral("&Amber circuit")};
+        for (int index = 0; index < P2000T_STREAM_ARTWORK_COUNT; ++index) {
+            QAction *action = artwork->addAction(names[index]);
+            action->setCheckable(true);
+            artworkGroup->addAction(action);
+            artwork_actions_[static_cast<size_t>(index)] = action;
+            connect(action, &QAction::triggered, this, [this, index] {
+                sendConfigurationCommand(
+                    static_cast<char>('1' + index),
+                    QStringLiteral("No-connection artwork: %1")
+                        .arg(p2000tArtworkName(static_cast<quint8>(index))));
+            });
+        }
+        artwork_actions_[P2000T_STREAM_ARTWORK_AMBER_CIRCUIT]->setChecked(true);
+        configuration_menu_->setEnabled(false);
+
+        auto *help = menuBar()->addMenu(QStringLiteral("&Help"));
+        auto *about = help->addAction(
+            QIcon(QStringLiteral(":/icons/retro/about.png")),
+            QStringLiteral("&About"));
+        connect(about, &QAction::triggered, this, [this] {
+            QMessageBox::about(
+                this, QStringLiteral("About P2000T VID2VGA Capture"),
+                QStringLiteral(
+                    "<h3>P2000T VID2VGA Capture %1</h3>"
+                    "<p>Live USB capture viewer and configuration utility "
+                    "for the Raspberry Pi Pico 2 P2000T video-to-VGA "
+                    "adapter.</p><p>Copyright &copy; 2026 Ivo Filot<br>"
+                    "Licensed under GPL-3.0-or-later.</p>")
+                    .arg(QStringLiteral(P2000T_VIEWER_VERSION)));
+        });
+    }
+
     void refreshPorts() {
         const QString selected = ports_->currentText();
         ports_->clear();
@@ -168,6 +285,9 @@ private:
             ports_->setCurrentIndex(previous);
         }
         connect_->setEnabled(connected_ || ports_->count() != 0);
+        if (connect_action_ != nullptr) {
+            connect_action_->setEnabled(connected_ || ports_->count() != 0);
+        }
     }
 
     void toggleConnection() {
@@ -175,11 +295,23 @@ private:
             disconnectAdapter();
             return;
         }
+        connectAdapter(true);
+    }
+
+    bool connectAdapter(bool reportError) {
+        if (connected_) {
+            return true;
+        }
         const QString port = ports_->currentText();
         if (port.isEmpty() || !serial_.open(port)) {
-            QMessageBox::critical(this, QStringLiteral("Connection failed"),
-                                  QStringLiteral("Could not open %1.").arg(port));
-            return;
+            statusBar()->showMessage(
+                QStringLiteral("Could not open %1").arg(port));
+            if (reportError) {
+                QMessageBox::critical(
+                    this, QStringLiteral("Connection failed"),
+                    QStringLiteral("Could not open %1.").arg(port));
+            }
+            return false;
         }
         connected_ = true;
         receive_buffer_.clear();
@@ -190,6 +322,8 @@ private:
         ports_->setEnabled(false);
         encoding_->setEnabled(false);
         connect_->setText(QStringLiteral("Disconnect"));
+        connect_action_->setText(QStringLiteral("&Disconnect"));
+        configuration_menu_->setEnabled(true);
         poll_timer_.start();
         statusBar()->showMessage(QStringLiteral("Initializing %1...").arg(port));
 
@@ -204,6 +338,7 @@ private:
                 connectionLost();
             }
         });
+        return true;
     }
 
     void disconnectAdapter() {
@@ -217,7 +352,21 @@ private:
         encoding_->setEnabled(true);
         connect_->setText(QStringLiteral("Connect"));
         connect_->setEnabled(ports_->count() != 0);
+        connect_action_->setText(QStringLiteral("&Connect"));
+        connect_action_->setEnabled(ports_->count() != 0);
+        configuration_menu_->setEnabled(false);
         statusBar()->showMessage(QStringLiteral("Disconnected"));
+    }
+
+    void sendConfigurationCommand(char command, const QString &description) {
+        if (!connected_) {
+            return;
+        }
+        if (!serial_.write(QByteArray(1, command))) {
+            connectionLost();
+            return;
+        }
+        statusBar()->showMessage(description, 2000);
     }
 
     void connectionLost() {
@@ -375,6 +524,9 @@ private:
 
     void updateStatus(quint32 sequence, quint32 payload_size,
                       bool signal_present, quint8 artwork) {
+        if (artwork < artwork_actions_.size()) {
+            artwork_actions_[artwork]->setChecked(true);
+        }
         if (!signal_present) {
             statusBar()->showMessage(
                 QStringLiteral("%1 | no P2000T signal | VGA screen: %2")
@@ -419,6 +571,9 @@ private:
     QPushButton *connect_ = nullptr;
     QPushButton *save_ = nullptr;
     FrameView *view_ = nullptr;
+    QAction *connect_action_ = nullptr;
+    QMenu *configuration_menu_ = nullptr;
+    std::array<QAction *, P2000T_STREAM_ARTWORK_COUNT> artwork_actions_ = {};
     QByteArray receive_buffer_;
     QImage current_frame_;
     bool connected_ = false;

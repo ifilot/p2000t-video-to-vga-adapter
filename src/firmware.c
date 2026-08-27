@@ -355,75 +355,96 @@ static void enter_screen_mode(bool allow_packbits) {
  * @brief Request a no-connection artwork change at the next VGA frame.
  *
  * @param artwork Valid embedded artwork selection.
+ * @param quiet Suppress console text while a binary stream is active.
  */
-static void select_no_signal_artwork(p2000t_no_signal_artwork_t artwork) {
+static void select_no_signal_artwork(p2000t_no_signal_artwork_t artwork,
+                                     bool quiet) {
     hard_assert((unsigned)artwork < P2000T_NO_SIGNAL_ARTWORK_COUNT);
     store_statistic(&requested_no_signal_artwork, (uint32_t)artwork);
     static const char *const names[P2000T_NO_SIGNAL_ARTWORK_COUNT] = {
         "green phosphor", "synthwave", "amber circuit"};
-    printf("No-connection artwork %u selected: %s. "
-           "Applies at the next VGA frame.\n",
-           (unsigned)artwork + 1u, names[artwork]);
+    if (!quiet) {
+        printf("No-connection artwork %u selected: %s. "
+               "Applies at the next VGA frame.\n",
+               (unsigned)artwork + 1u, names[artwork]);
+    }
 }
 
 /**
  * @brief Adjust the first captured source line by a signed amount.
  *
  * @param change Signed number of source scanlines to add.
+ * @param quiet Suppress console text while a binary stream is active.
  */
-static void adjust_first_visible_line(int change) {
+static void adjust_first_visible_line(int change, bool quiet) {
     p2000t_capture_stats_t capture;
     p2000t_capture_get_stats(&capture);
     const int requested = (int)capture.first_visible_scanline + change;
     if (!p2000t_capture_set_first_visible_scanline((unsigned)requested)) {
-        printf("First visible line must remain between %u and %u.\n",
-               P2000T_MIN_FIRST_VISIBLE_SCANLINE,
-               P2000T_MAX_FIRST_VISIBLE_SCANLINE);
+        if (!quiet) {
+            printf("First visible line must remain between %u and %u.\n",
+                   P2000T_MIN_FIRST_VISIBLE_SCANLINE,
+                   P2000T_MAX_FIRST_VISIBLE_SCANLINE);
+        }
         return;
     }
-    printf("First visible source scanline set to %d; "
-           "applies on the next frame.\n",
-           requested);
+    if (!quiet) {
+        printf("First visible source scanline set to %d; "
+               "applies on the next frame.\n",
+               requested);
+    }
 }
 
 /**
  * @brief Adjust the fine capture phase by a signed number of PIO ticks.
  *
  * @param change Signed number of 7.94 ns capture ticks to add.
+ * @param quiet Suppress console text while a binary stream is active.
  */
-static void adjust_sample_phase(int change) {
+static void adjust_sample_phase(int change, bool quiet) {
     p2000t_capture_stats_t capture;
     p2000t_capture_get_stats(&capture);
     const int requested = capture.sample_phase + change;
     if (!p2000t_capture_set_sample_phase(requested)) {
-        printf("Sample phase must remain between %d and %d.\n",
-               P2000T_MIN_SAMPLE_PHASE, P2000T_MAX_SAMPLE_PHASE);
+        if (!quiet) {
+            printf("Sample phase must remain between %d and %d.\n",
+                   P2000T_MIN_SAMPLE_PHASE, P2000T_MAX_SAMPLE_PHASE);
+        }
         return;
     }
-    printf("Sample phase set to %+d (positive is later); "
-           "one tick is 7.94 ns and it applies on the next source frame.\n",
-           requested);
+    if (!quiet) {
+        printf("Sample phase set to %+d (positive is later); "
+               "one tick is 7.94 ns and it applies on the next source frame.\n",
+               requested);
+    }
 }
 
 /**
  * @brief Adjust the coarse horizontal capture start.
  *
  * @param change Signed number of nominal source dots to add.
+ * @param quiet Suppress console text while a binary stream is active.
  */
-static void adjust_horizontal_offset(int change) {
+static void adjust_horizontal_offset(int change, bool quiet) {
     p2000t_capture_stats_t capture;
     p2000t_capture_get_stats(&capture);
     const int requested = (int)capture.horizontal_offset + change;
     if (requested < P2000T_MIN_HORIZONTAL_OFFSET ||
         requested > P2000T_MAX_HORIZONTAL_OFFSET ||
         !p2000t_capture_set_horizontal_offset((unsigned)requested)) {
-        printf("Horizontal start must remain between %u and %u source dots.\n",
-               P2000T_MIN_HORIZONTAL_OFFSET, P2000T_MAX_HORIZONTAL_OFFSET);
+        if (!quiet) {
+            printf("Horizontal start must remain between %u and %u "
+                   "source dots.\n",
+                   P2000T_MIN_HORIZONTAL_OFFSET,
+                   P2000T_MAX_HORIZONTAL_OFFSET);
+        }
         return;
     }
-    printf("Horizontal start set to %d source dots (%d characters); "
-           "applies on the next frame.\n",
-           requested, requested / P2000T_HORIZONTAL_OFFSET_STEP);
+    if (!quiet) {
+        printf("Horizontal start set to %d source dots (%d characters); "
+               "applies on the next frame.\n",
+               requested, requested / P2000T_HORIZONTAL_OFFSET_STEP);
+    }
 }
 
 /**
@@ -435,15 +456,20 @@ static void adjust_horizontal_offset(int change) {
  * @param command Character code returned by the Pico stdio layer.
  */
 static void handle_usb_command(int command) {
+#if defined(PICO_RP2350) && PICO_RP2350
+    const bool quiet = p2000t_usb_stream_active();
+#else
+    const bool quiet = false;
+#endif
     switch (command) {
     case '1':
-        select_no_signal_artwork(P2000T_NO_SIGNAL_GREEN_PHOSPHOR);
+        select_no_signal_artwork(P2000T_NO_SIGNAL_GREEN_PHOSPHOR, quiet);
         break;
     case '2':
-        select_no_signal_artwork(P2000T_NO_SIGNAL_SYNTHWAVE);
+        select_no_signal_artwork(P2000T_NO_SIGNAL_SYNTHWAVE, quiet);
         break;
     case '3':
-        select_no_signal_artwork(P2000T_NO_SIGNAL_AMBER_CIRCUIT);
+        select_no_signal_artwork(P2000T_NO_SIGNAL_AMBER_CIRCUIT, quiet);
         break;
 #if defined(PICO_RP2350) && PICO_RP2350
     case 'c':
@@ -468,43 +494,50 @@ static void handle_usb_command(int command) {
         break;
     case '[':
     case '-':
-        adjust_first_visible_line(-1);
+        adjust_first_visible_line(-1, quiet);
         break;
     case ']':
     case '+':
-        adjust_first_visible_line(1);
+        adjust_first_visible_line(1, quiet);
         break;
     case '0':
         if (p2000t_capture_set_first_visible_scanline(
                 P2000T_DEFAULT_FIRST_VISIBLE_SCANLINE)) {
-            printf("First visible source scanline reset to %u.\n",
-                   P2000T_DEFAULT_FIRST_VISIBLE_SCANLINE);
+            if (!quiet) {
+                printf("First visible source scanline reset to %u.\n",
+                       P2000T_DEFAULT_FIRST_VISIBLE_SCANLINE);
+            }
         }
         break;
     case ',':
-        adjust_sample_phase(-1);
+        adjust_sample_phase(-1, quiet);
         break;
     case '.':
-        adjust_sample_phase(1);
+        adjust_sample_phase(1, quiet);
         break;
     case 'p':
     case 'P':
         if (p2000t_capture_set_sample_phase(P2000T_DEFAULT_SAMPLE_PHASE)) {
-            printf("Sample phase reset to %d.\n", P2000T_DEFAULT_SAMPLE_PHASE);
+            if (!quiet) {
+                printf("Sample phase reset to %d.\n",
+                       P2000T_DEFAULT_SAMPLE_PHASE);
+            }
         }
         break;
     case '<':
-        adjust_horizontal_offset(-P2000T_HORIZONTAL_OFFSET_STEP);
+        adjust_horizontal_offset(-P2000T_HORIZONTAL_OFFSET_STEP, quiet);
         break;
     case '>':
-        adjust_horizontal_offset(P2000T_HORIZONTAL_OFFSET_STEP);
+        adjust_horizontal_offset(P2000T_HORIZONTAL_OFFSET_STEP, quiet);
         break;
     case 'x':
     case 'X':
         if (p2000t_capture_set_horizontal_offset(
                 P2000T_DEFAULT_HORIZONTAL_OFFSET)) {
-            printf("Horizontal start reset to %u source dots.\n",
-                   P2000T_DEFAULT_HORIZONTAL_OFFSET);
+            if (!quiet) {
+                printf("Horizontal start reset to %u source dots.\n",
+                       P2000T_DEFAULT_HORIZONTAL_OFFSET);
+            }
         }
         break;
     case 'h':
@@ -522,9 +555,18 @@ static void poll_usb_commands(void) {
     int command;
     while ((command = getchar_timeout_us(0)) != PICO_ERROR_TIMEOUT) {
 #if defined(PICO_RP2350) && PICO_RP2350
-        if (p2000t_usb_stream_active() && command != 'q' && command != 'Q' &&
-            command != 0x1b) {
-            continue;
+        if (p2000t_usb_stream_active()) {
+            const bool stream_command =
+                command == 'q' || command == 'Q' || command == 0x1b;
+            const bool configuration_command =
+                (command >= '1' && command <= '3') || command == '[' ||
+                command == '-' || command == ']' || command == '+' ||
+                command == '0' || command == ',' || command == '.' ||
+                command == 'p' || command == 'P' || command == '<' ||
+                command == '>' || command == 'x' || command == 'X';
+            if (!stream_command && !configuration_command) {
+                continue;
+            }
         }
         if (command == 0x1b) {
             command = 'q';

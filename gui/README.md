@@ -11,7 +11,16 @@ bitmap font, and overlay coordinates used by the firmware.
 
 The application carries its retro-computing icon in the Qt resources and as a
 multi-resolution Windows executable icon; no separate image files are needed
-beside the packaged executable.
+beside the packaged executable. Its menu actions use a matching late-1990s
+Linux desktop-inspired icon set embedded in the same resource bundle.
+
+When launched, the viewer attempts to connect to the first detected Pico USB
+CDC port and start the selected stream encoding. Manual port refresh and
+connect/disconnect controls remain available. The Adapter > Configure Pico 2
+menu exposes every capture-alignment and no-connection-artwork command while
+streaming; these controls require firmware containing the matching support for
+silent commands in binary mode. File > Exit and Help > About provide the
+standard application menu entries.
 
 The firmware command `c` starts the recommended PackBits stream, `r` starts a
 raw stream, and `q` returns it to the normal USB console. Streaming is currently
