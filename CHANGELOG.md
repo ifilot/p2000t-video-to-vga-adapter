@@ -4,6 +4,24 @@ Notable project changes are recorded here.
 
 ## Unreleased
 
+## 0.2.0 - 2026-08-27
+
+### Added
+
+- Green-phosphor, synthwave, and amber-circuit no-connection artwork, selectable
+  at runtime with USB commands `1`, `2`, and `3`.
+- Automatic CMake downloads for the pinned Pico SDK and pico-extras releases.
+
+### Changed
+
+- No-connection artwork now uses a timing-safe 16-color RGB444 indexed
+  pipeline with one SRAM palette lookup per pair of pixels.
+- Artwork selection is adopted atomically at VGA frame boundaries to prevent
+  tearing.
+- Linux build requirements and artwork controls are documented in the README.
+- GitHub Actions uses the same self-contained CMake dependency setup as local
+  builds.
+
 ## 0.1.1 - 2026-08-26
 
 ### Added
