@@ -119,11 +119,30 @@ bool p2000t_capture_signal_present(void);
 int p2000t_capture_acquire_latest_frame(uint32_t *sequence);
 
 /**
+ * @brief Add a short-lived USB hold to the newest complete frame.
+ *
+ * Unlike the VGA acquisition API, this does not change display ownership.
+ * The returned frame may therefore be shared safely with the VGA core while
+ * Pico 2 packs an independent USB snapshot.
+ *
+ * @param sequence Output location for the held frame's sequence number.
+ * @return Capture-buffer index, or -1 when no complete frame is available.
+ */
+#if defined(PICO_RP2350) && PICO_RP2350
+int p2000t_capture_acquire_latest_frame_for_usb(uint32_t *sequence);
+#endif
+
+/**
  * @brief Release a frame previously claimed by the VGA core.
  *
  * @param buffer_index Index returned by p2000t_capture_acquire_latest_frame().
  */
 void p2000t_capture_release_frame(unsigned buffer_index);
+
+/** Release a frame held by p2000t_capture_acquire_latest_frame_for_usb(). */
+#if defined(PICO_RP2350) && PICO_RP2350
+void p2000t_capture_release_frame_from_usb(unsigned buffer_index);
+#endif
 
 /**
  * @brief Return immutable packed RGBS storage for a claimed frame.

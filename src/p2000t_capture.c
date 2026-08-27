@@ -99,6 +99,11 @@ static uint32_t tx_commands[CAPTURE_TX_COMMAND_COUNT];
 /** Current lifecycle state of each capture buffer. */
 static buffer_state_t buffer_states[CAPTURE_BUFFER_COUNT];
 
+/** Independent short-lived USB reader hold for each complete frame. */
+#if defined(PICO_RP2350) && PICO_RP2350
+static bool buffer_usb_holds[CAPTURE_BUFFER_COUNT];
+#endif
+
 /** Monotonic source-frame sequence assigned to each completed buffer. */
 static uint32_t buffer_sequences[CAPTURE_BUFFER_COUNT];
 
@@ -202,7 +207,11 @@ static void arm_capture_frame(void) {
  */
 static unsigned choose_next_fill_buffer(void) {
     for (unsigned i = 0; i < CAPTURE_BUFFER_COUNT; ++i) {
-        if (buffer_states[i] == BUFFER_FREE) {
+        if (buffer_states[i] == BUFFER_FREE
+#if defined(PICO_RP2350) && PICO_RP2350
+            && !buffer_usb_holds[i]
+#endif
+        ) {
             return i;
         }
     }
@@ -210,7 +219,11 @@ static unsigned choose_next_fill_buffer(void) {
     unsigned oldest = CAPTURE_BUFFER_COUNT;
     uint32_t oldest_age = 0;
     for (unsigned i = 0; i < CAPTURE_BUFFER_COUNT; ++i) {
-        if (buffer_states[i] == BUFFER_READY) {
+        if (buffer_states[i] == BUFFER_READY
+#if defined(PICO_RP2350) && PICO_RP2350
+            && !buffer_usb_holds[i]
+#endif
+        ) {
             const uint32_t age = captured_frames - buffer_sequences[i];
             if (oldest == CAPTURE_BUFFER_COUNT || age > oldest_age) {
                 oldest = i;
@@ -319,6 +332,9 @@ void p2000t_capture_start(void) {
 
     for (unsigned i = 0; i < CAPTURE_BUFFER_COUNT; ++i) {
         buffer_states[i] = BUFFER_FREE;
+#if defined(PICO_RP2350) && PICO_RP2350
+        buffer_usb_holds[i] = false;
+#endif
         buffer_sequences[i] = 0;
     }
     capture_fill_index = 0;
@@ -360,6 +376,31 @@ int p2000t_capture_acquire_latest_frame(uint32_t *sequence) {
     return latest;
 }
 
+#if defined(PICO_RP2350) && PICO_RP2350
+int p2000t_capture_acquire_latest_frame_for_usb(uint32_t *sequence) {
+    hard_assert(sequence != NULL);
+    const uint32_t saved = spin_lock_blocking(buffer_lock);
+    int latest = -1;
+    uint32_t latest_sequence = 0;
+    for (unsigned i = 0; i < CAPTURE_BUFFER_COUNT; ++i) {
+        const bool complete = buffer_states[i] == BUFFER_READY ||
+                              buffer_states[i] == BUFFER_IN_USE;
+        if (complete && !buffer_usb_holds[i] &&
+            (latest < 0 ||
+             sequence_is_newer(buffer_sequences[i], latest_sequence))) {
+            latest = (int)i;
+            latest_sequence = buffer_sequences[i];
+        }
+    }
+    if (latest >= 0) {
+        buffer_usb_holds[latest] = true;
+        *sequence = latest_sequence;
+    }
+    spin_unlock(buffer_lock, saved);
+    return latest;
+}
+#endif
+
 void p2000t_capture_release_frame(unsigned buffer_index) {
     hard_assert(buffer_index < CAPTURE_BUFFER_COUNT);
     const uint32_t saved = spin_lock_blocking(buffer_lock);
@@ -368,6 +409,15 @@ void p2000t_capture_release_frame(unsigned buffer_index) {
     }
     spin_unlock(buffer_lock, saved);
 }
+
+#if defined(PICO_RP2350) && PICO_RP2350
+void p2000t_capture_release_frame_from_usb(unsigned buffer_index) {
+    hard_assert(buffer_index < CAPTURE_BUFFER_COUNT);
+    const uint32_t saved = spin_lock_blocking(buffer_lock);
+    buffer_usb_holds[buffer_index] = false;
+    spin_unlock(buffer_lock, saved);
+}
+#endif
 
 const uint32_t *p2000t_capture_buffer(unsigned buffer_index) {
     hard_assert(buffer_index < CAPTURE_BUFFER_COUNT);

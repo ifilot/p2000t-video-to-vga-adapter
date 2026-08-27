@@ -4,6 +4,34 @@ Notable project changes are recorded here.
 
 ## Unreleased
 
+### Added
+
+- Pico 2 continuous USB capture streaming for 480×240 planar RGB111 frames,
+  with per-frame CRC-32, raw/PackBits selection, non-blocking TinyUSB
+  backpressure, and a target rate of 25 FPS.
+- Minimal Qt 6 desktop capture viewer for Windows, Linux, and macOS, including
+  native Pico CDC discovery, CRC validation, and lossless PNG screenshots.
+- MSYS2/UCRT64 Windows viewer build, test, packaging, and release automation.
+- P2000M-inspired NSIS graphical Windows installer with Program Files
+  deployment, shortcuts, upgrade-aware identity, and a standard uninstaller.
+
+### Changed
+
+- Capture-buffer ownership now permits a short-lived Pico 2 USB reader without
+  exposing a buffer that DMA may overwrite or changing the Pico/RP2040 memory
+  footprint.
+- The desktop viewer duplicates every source scanline for the correct 480×480
+  square-pixel display and PNG geometry.
+- USB state records now identify signal loss and the no-connection artwork
+  actually displayed by the VGA core without transferring stale pixels.
+- The viewer now reproduces the complete selected 640×480 no-connection VGA
+  screen from embedded RGB444 artwork and a shared pixel-exact overlay layout.
+- A transparent retro-computing application icon based on the real P2000T,
+  DIN6, and VGA connector silhouettes is embedded in the Qt application and
+  the multi-resolution Windows executable resources.
+- Windows CI now validates the installer archive and smoke-tests a fresh
+  install, same-directory upgrade, and complete uninstall on every commit.
+
 ## 0.2.0 - 2026-08-27
 
 ### Added

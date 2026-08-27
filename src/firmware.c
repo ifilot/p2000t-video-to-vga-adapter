@@ -22,6 +22,11 @@
 #include "pico/stdio_usb.h"
 #include "pico/stdlib.h"
 
+#if defined(PICO_RP2350) && PICO_RP2350
+#include "p2000t_stream_protocol.h"
+#include "p2000t_usb_stream.h"
+#endif
+
 #if defined(PICO_RP2040) && PICO_RP2040
 /** Human-readable processor name included in the USB banner. */
 #define P2000T_PROCESSOR_NAME "RP2040 / Pico 1"
@@ -48,6 +53,17 @@ _Static_assert(P2000T_VGA_RENDER_HEIGHT *P2000T_VGA_VERTICAL_SCALE ==
 _Static_assert((unsigned)P2000T_CAPTURE_HEIGHT ==
                    (unsigned)P2000T_VGA_RENDER_HEIGHT,
                "Each source line must map to one logical scanvideo line");
+#if defined(PICO_RP2350) && PICO_RP2350
+_Static_assert((unsigned)P2000T_NO_SIGNAL_GREEN_PHOSPHOR ==
+                   (unsigned)P2000T_STREAM_ARTWORK_GREEN_PHOSPHOR &&
+                   (unsigned)P2000T_NO_SIGNAL_SYNTHWAVE ==
+                       (unsigned)P2000T_STREAM_ARTWORK_SYNTHWAVE &&
+                   (unsigned)P2000T_NO_SIGNAL_AMBER_CIRCUIT ==
+                       (unsigned)P2000T_STREAM_ARTWORK_AMBER_CIRCUIT &&
+                   (unsigned)P2000T_NO_SIGNAL_ARTWORK_COUNT ==
+                       (unsigned)P2000T_STREAM_ARTWORK_COUNT,
+               "USB artwork identifiers must match the VGA renderer");
+#endif
 
 /** Standard 640x480, nominal 60 Hz VGA at a 25.2 MHz pixel clock. */
 static const scanvideo_timing_t vga_timing_640x480_60 = {
@@ -98,6 +114,8 @@ typedef struct {
     volatile uint32_t
         signal_lost_frames;             /**< VGA frames with no valid input. */
     volatile uint32_t scanline_id_gaps; /**< Non-contiguous scanline IDs. */
+    volatile uint32_t signal_present; /**< Signal state used by current VGA frame. */
+    volatile uint32_t no_signal_artwork; /**< Artwork used by current VGA frame. */
 } vga_statistics_t;
 
 /** VGA-core-owned display state, initialized without a captured frame. */
@@ -107,7 +125,9 @@ static vga_display_state_t display_state = {
 };
 
 /** Diagnostics shared atomically between the VGA and control cores. */
-static vga_statistics_t vga_statistics;
+static vga_statistics_t vga_statistics = {
+    .no_signal_artwork = P2000T_NO_SIGNAL_ARTWORK_DEFAULT,
+};
 
 /** USB-selected artwork adopted by the VGA core at its next frame boundary. */
 static volatile uint32_t requested_no_signal_artwork =
@@ -158,6 +178,10 @@ static void select_frame_for_next_vga_frame(void) {
     display_state.no_signal_artwork = (p2000t_no_signal_artwork_t)
         load_statistic(&requested_no_signal_artwork);
     display_state.signal_present = p2000t_capture_signal_present();
+    store_statistic(&vga_statistics.signal_present,
+                    display_state.signal_present ? 1u : 0u);
+    store_statistic(&vga_statistics.no_signal_artwork,
+                    (uint32_t)display_state.no_signal_artwork);
 
     uint32_t sequence;
     const int next_buffer = p2000t_capture_acquire_latest_frame(&sequence);
@@ -257,7 +281,8 @@ static void print_status(void) {
     const uint32_t id_gaps = load_statistic(&vga_statistics.scanline_id_gaps);
     const uint32_t sequence =
         load_statistic(&vga_statistics.displayed_sequence);
-    const uint32_t artwork = load_statistic(&requested_no_signal_artwork);
+    const uint32_t artwork =
+        load_statistic(&vga_statistics.no_signal_artwork);
 
     printf("VID2VGA captured=%" PRIu32 " locked=%s period=",
            capture.captured_frames, capture.signal_present ? "yes" : "no");
@@ -277,6 +302,24 @@ static void print_status(void) {
            capture.first_visible_scanline, capture.horizontal_offset,
            capture.sample_phase, capture.stale_frames_replaced, vga_frames,
            swaps, repeats, lost, id_gaps, sequence, artwork + 1u);
+#if defined(PICO_RP2350) && PICO_RP2350
+    p2000t_usb_stream_stats_t stream;
+    p2000t_usb_stream_get_stats(&stream);
+    printf("USB screen frames=%" PRIu32 " no_signal=%" PRIu32
+           " bytes=%llu"
+           " raw=%" PRIu32 " packbits=%" PRIu32
+           " payload=%" PRIu32 " prepare=%" PRIu32 "/%" PRIu32
+           "us encode=%" PRIu32 "/%" PRIu32
+           "us tx=%" PRIu32 "/%" PRIu32 "us skipped=%" PRIu32 "\n",
+           stream.frames_sent, stream.no_signal_records_sent,
+           (unsigned long long)stream.bytes_sent,
+           stream.raw_frames_sent,
+           stream.packbits_frames_sent, stream.last_payload_size,
+           stream.last_prepare_us, stream.maximum_prepare_us,
+           stream.last_encode_us, stream.maximum_encode_us,
+           stream.last_tx_us, stream.maximum_tx_us,
+           stream.skipped_sequences);
+#endif
 }
 
 /** @brief Print the available single-character USB commands. */
@@ -287,7 +330,26 @@ static void print_help(void) {
            "x=reset start, h=help\n");
     printf("No-connection artwork: 1=green phosphor, 2=synthwave, "
            "3=amber circuit\n");
+#if defined(PICO_RP2350) && PICO_RP2350
+    printf("Pico 2 screen capture: c=PackBits stream, r=raw stream, "
+           "q=return to console\n");
+#endif
 }
+
+#if defined(PICO_RP2350) && PICO_RP2350
+/** Enter the continuous binary RGB111 screen interface. */
+static void enter_screen_mode(bool allow_packbits) {
+    printf("SCREEN mode=binary version=%u width=%u height=%u fps=25 "
+           "header=%u payload=%u format=planar-rgb111 encoding=%s "
+           "flow=continuous exit=q\n",
+           P2000T_STREAM_PROTOCOL_VERSION, P2000T_STREAM_WIDTH,
+           P2000T_STREAM_HEIGHT, P2000T_STREAM_HEADER_SIZE,
+           P2000T_STREAM_PAYLOAD_SIZE,
+           allow_packbits ? "packbits+raw" : "raw");
+    stdio_flush();
+    p2000t_usb_stream_start(allow_packbits);
+}
+#endif
 
 /**
  * @brief Request a no-connection artwork change at the next VGA frame.
@@ -383,6 +445,23 @@ static void handle_usb_command(int command) {
     case '3':
         select_no_signal_artwork(P2000T_NO_SIGNAL_AMBER_CIRCUIT);
         break;
+#if defined(PICO_RP2350) && PICO_RP2350
+    case 'c':
+    case 'C':
+        enter_screen_mode(true);
+        break;
+    case 'r':
+    case 'R':
+        enter_screen_mode(false);
+        break;
+    case 'q':
+    case 'Q':
+        if (p2000t_usb_stream_active()) {
+            p2000t_usb_stream_stop();
+            printf("\nUSB screen stream stopped.\n");
+        }
+        break;
+#endif
     case 's':
     case 'S':
         print_status();
@@ -442,6 +521,15 @@ static void handle_usb_command(int command) {
 static void poll_usb_commands(void) {
     int command;
     while ((command = getchar_timeout_us(0)) != PICO_ERROR_TIMEOUT) {
+#if defined(PICO_RP2350) && PICO_RP2350
+        if (p2000t_usb_stream_active() && command != 'q' && command != 'Q' &&
+            command != 0x1b) {
+            continue;
+        }
+        if (command == 0x1b) {
+            command = 'q';
+        }
+#endif
         handle_usb_command(command);
     }
 }
@@ -460,6 +548,10 @@ static void announce_usb_connection(void) {
 #endif
     printf("Display: 480x240 raw RGBS capture, vertically doubled "
            "to centered 480x480 VGA\n");
+#if defined(PICO_RP2350) && PICO_RP2350
+    printf("USB capture: 480x240 planar RGB111, raw or lossless PackBits, "
+           "25 FPS target\n");
+#endif
     printf("EXPERIMENTAL clock=%uMHz core_voltage=%u.%03uV; "
            "capture=12MHz raw VGA=25.2MHz\n",
            SYSTEM_CLOCK_KHZ / 1000u, SYSTEM_CORE_VOLTAGE_MV / 1000u,
@@ -514,6 +606,15 @@ int main(void) {
             announced = true;
         }
         poll_usb_commands();
+#if defined(PICO_RP2350) && PICO_RP2350
+        if (p2000t_usb_stream_active()) {
+            p2000t_usb_stream_service(
+                load_statistic(&vga_statistics.signal_present) != 0u,
+                load_statistic(&vga_statistics.no_signal_artwork));
+            sleep_us(100u);
+            continue;
+        }
+#endif
         sleep_ms(10);
     }
 }

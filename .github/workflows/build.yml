@@ -54,10 +54,112 @@ jobs:
           if-no-files-found: error
           path: dist/*
 
+  viewer-windows:
+    name: Build and install-test Windows capture viewer
+    runs-on: windows-2025
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install MSYS2 UCRT64 build tools
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-qt6-base
+
+      - name: Install NSIS installer compiler
+        shell: pwsh
+        run: choco install nsis --yes --no-progress
+
+      - name: Configure, test, and package viewer
+        shell: msys2 {0}
+        run: |
+          cmake -S gui -B build-gui -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+          cmake --build build-gui --parallel
+          ctest --test-dir build-gui --output-on-failure
+          mkdir -p dist/viewer
+          cp build-gui/p2000t-vid2vga-capture.exe dist/viewer/
+          windeployqt6 --release --no-translations \
+            dist/viewer/p2000t-vid2vga-capture.exe
+          cp gui/README.md dist/viewer/README.md
+          mkdir -p dist/viewer/licenses
+          cp LICENSES/GPL-3.0-or-later.txt dist/viewer/licenses/
+          cp -R /ucrt64/share/licenses/qt6-base dist/viewer/licenses/
+          cp -R /ucrt64/share/licenses/qt6-svg dist/viewer/licenses/
+          cp -R /ucrt64/share/licenses/qt6-pdf dist/viewer/licenses/
+          for pass in 1 2 3; do
+            find dist/viewer -type f \( -name '*.exe' -o -name '*.dll' \) \
+              -print0 | xargs -0 -r ldd | \
+              awk '$3 ~ /^\/ucrt64\/bin\// { print $3 }' | sort -u | \
+              xargs -r -I{} cp -n '{}' dist/viewer/
+          done
+
+      - name: Create and smoke-test Windows packages
+        shell: pwsh
+        run: |
+          $version = (Get-Content build-gui/package-version.txt -Raw).Trim()
+          $archive = "dist/p2000t-vid2vga-capture-windows.zip"
+          Compress-Archive -Path dist/viewer/* -DestinationPath $archive
+          if (-not (Test-Path $archive -PathType Leaf)) {
+            throw "Windows portable package was not created: $archive"
+          }
+
+          $installer = "dist/p2000t-vid2vga-capture-windows-setup.exe"
+          & gui/packaging/create_windows_installer.ps1 `
+            -Stage dist/viewer -Version $version -Output $installer `
+            -WorkDirectory installer-work
+          7z t $installer
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows installer integrity check failed."
+          }
+
+          $installer = (Resolve-Path $installer).Path
+          $smokeDirectory = Join-Path $env:RUNNER_TEMP `
+            "p2000t-capture-installer-smoke"
+          $firstInstall = Start-Process -FilePath $installer -Wait `
+            -PassThru -ArgumentList @("/S", "/D=$smokeDirectory")
+          if ($firstInstall.ExitCode -ne 0 -or
+              -not (Test-Path `
+                "$smokeDirectory/p2000t-vid2vga-capture.exe")) {
+            throw "Fresh Windows installation smoke test failed."
+          }
+
+          $upgrade = Start-Process -FilePath $installer -Wait -PassThru `
+            -ArgumentList @("/S", "/D=$smokeDirectory")
+          if ($upgrade.ExitCode -ne 0) {
+            throw "Same-directory Windows upgrade smoke test failed."
+          }
+
+          $uninstaller = Join-Path $smokeDirectory "uninstall.exe"
+          $uninstall = Start-Process -FilePath $uninstaller -Wait `
+            -PassThru -ArgumentList "/S"
+          if ($uninstall.ExitCode -ne 0 -or
+              (Test-Path $smokeDirectory)) {
+            throw "Windows uninstaller smoke test failed."
+          }
+
+      - name: Upload Windows capture viewer
+        uses: actions/upload-artifact@v4
+        with:
+          name: p2000t-vid2vga-capture-windows
+          if-no-files-found: error
+          path: |
+            dist/p2000t-vid2vga-capture-windows.zip
+            dist/p2000t-vid2vga-capture-windows-setup.exe
+
   release:
     name: Create GitHub Release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: build
+    needs:
+      - build
+      - viewer-windows
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -78,6 +180,8 @@ jobs:
           gh release create "${GITHUB_REF_NAME}"
           dist/p2000t-vid2vga-pico.uf2
           dist/p2000t-vid2vga-pico2.uf2
+          dist/p2000t-vid2vga-capture-windows.zip
+          dist/p2000t-vid2vga-capture-windows-setup.exe
           --verify-tag
           --generate-notes
           --latest

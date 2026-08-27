@@ -1,0 +1,8 @@
+<!DOCTYPE RCC><RCC version="1.0">
+  <qresource>
+    <file alias="icons/p2000t-capture.png">assets/p2000t-capture-v2.png</file>
+    <file alias="no_connection/green_phosphor.png">../assets/no_connection/green_phosphor.png</file>
+    <file alias="no_connection/synthwave.png">../assets/no_connection/synthwave.png</file>
+    <file alias="no_connection/amber_circuit.png">../assets/no_connection/amber_circuit.png</file>
+  </qresource>
+</RCC>

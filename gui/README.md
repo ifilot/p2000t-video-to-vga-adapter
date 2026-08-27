@@ -1,0 +1,77 @@
+# P2000T VID2VGA Capture
+
+This deliberately small Qt 6 application discovers Raspberry Pi Pico USB CDC
+ports, starts the Pico 2 binary RGB111 screen stream, verifies every frame with
+CRC-32, and displays every 480×240 capture scanline twice as a square-pixel
+480×480 image. It supports lossless PackBits or raw records and can save the
+current frame as a PNG. When the P2000T signal is absent, the viewer reports
+which of the three embedded no-connection screens the VGA output is showing
+and reproduces that complete 640×480 screen from the same RGB444 artwork,
+bitmap font, and overlay coordinates used by the firmware.
+
+The application carries its retro-computing icon in the Qt resources and as a
+multi-resolution Windows executable icon; no separate image files are needed
+beside the packaged executable.
+
+The firmware command `c` starts the recommended PackBits stream, `r` starts a
+raw stream, and `q` returns it to the normal USB console. Streaming is currently
+compiled into the Pico 2 firmware only.
+
+## Windows build with MSYS2
+
+Open an **MSYS2 UCRT64** shell and install the compiler, CMake, Ninja, and Qt 6:
+
+```sh
+pacman -S --needed mingw-w64-ucrt-x86_64-toolchain \
+  mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja \
+  mingw-w64-ucrt-x86_64-qt6-base
+```
+
+Configure and compile from the repository root:
+
+```sh
+cmake -S gui -B build-gui -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-gui --parallel
+```
+
+The executable is `build-gui/p2000t-vid2vga-capture.exe`. To prepare a
+self-contained development directory with the required Qt DLLs:
+
+```sh
+mkdir -p build-gui/package
+cp build-gui/p2000t-vid2vga-capture.exe build-gui/package/
+windeployqt6 --release --no-translations \
+  build-gui/package/p2000t-vid2vga-capture.exe
+```
+
+MSYS2 runtime DLLs reported by `ldd` may also need to be copied into the
+package when it will run outside an MSYS2 UCRT64 environment. Redistributed Qt
+DLLs must be accompanied by their corresponding terms from
+`/ucrt64/share/licenses/qt6-base` and any additional Qt modules selected by
+`windeployqt6`. GitHub Actions performs both steps for the release ZIP.
+
+## Windows graphical installer
+
+The preferred package is an NSIS 3 offline installer inspired by the P2000M
+viewer. It installs the complete deployed application under Program Files,
+creates desktop and Start-menu shortcuts, upgrades an existing installation
+in place, and registers a conventional Windows uninstaller. Install NSIS 3
+and make `makensis.exe` available on `PATH`, then run from PowerShell after
+preparing a self-contained deployment directory:
+
+```powershell
+gui/packaging/create_windows_installer.ps1 `
+  -Stage dist/viewer -Version 0.3.0 `
+  -Output dist/p2000t-vid2vga-capture-windows-setup.exe `
+  -WorkDirectory installer-work
+```
+
+The stage must contain `p2000t-vid2vga-capture.exe`, all runtime DLLs, and
+`licenses/GPL-3.0-or-later.txt`. GitHub Actions constructs that tree, compiles
+both the installer and portable ZIP on every push and pull request, checks the
+installer archive with 7-Zip, and performs fresh-install, in-place-upgrade,
+and uninstall smoke tests. Tagged releases publish only after this job passes.
+
+The installer is currently unsigned because no Authenticode certificate is
+configured. Windows SmartScreen may therefore request confirmation on first
+launch.

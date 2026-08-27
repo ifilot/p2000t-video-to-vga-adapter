@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "p2000t_capture.h"
+#include "p2000t_no_signal_layout.h"
 #include "pico/scanvideo/composable_scanline.h"
 #include "pico/stdlib.h"
 
@@ -25,14 +26,6 @@ enum {
     VGA_RIGHT_MARGIN =
         P2000T_VGA_RENDER_WIDTH - VGA_LEFT_MARGIN - P2000T_CAPTURE_WIDTH,
     /**< Black pixels to the right of the centered source image. */
-    NO_SIGNAL_GLYPH_WIDTH = 5,    /**< Width of one bitmap glyph. */
-    NO_SIGNAL_GLYPH_HEIGHT = 7,   /**< Height of one bitmap glyph. */
-    NO_SIGNAL_FONT_GLYPHS = 36,   /**< Stored A-Z and 0-9 glyph count. */
-    NO_SIGNAL_TITLE_TOP = 3,   /**< Application title in logical VGA lines. */
-    NO_SIGNAL_VERSION_TOP = 13, /**< Firmware version below the title. */
-    NO_SIGNAL_ICON_TOP = 196,  /**< Disconnected-plug pictogram top edge. */
-    NO_SIGNAL_ICON_HEIGHT = 14, /**< Pictogram height in logical VGA lines. */
-    NO_SIGNAL_STATUS_TOP = 217, /**< Status label below the pictogram. */
     NO_SIGNAL_PALETTE_COLORS = 16,
     /**< Number of colors in the indexed artwork palette. */
     NO_SIGNAL_PALETTE_BYTES = NO_SIGNAL_PALETTE_COLORS * sizeof(uint16_t),
@@ -47,9 +40,10 @@ _Static_assert(P2000T_RAW_SCANLINE_WORDS == 323,
                "CMake scanvideo storage must match the raw line renderer");
 
 /** Application identity and status displayed around the centered artwork. */
-static const char no_signal_title[] = "P2000T VID2VGA";
-static const char no_signal_version[] = "VERSION " P2000T_VID2VGA_VERSION;
-static const char no_signal_status[] = "NO CONNECTION";
+static const char no_signal_title[] = P2000T_NO_SIGNAL_TITLE;
+static const char no_signal_version[] =
+    P2000T_NO_SIGNAL_VERSION_PREFIX P2000T_VID2VGA_VERSION;
+static const char no_signal_status[] = P2000T_NO_SIGNAL_STATUS;
 
 /** Compact indexed artwork embedded by CMake. */
 extern const uint8_t no_connection_image_green_phosphor[];
@@ -88,47 +82,6 @@ no_signal_image(p2000t_no_signal_artwork_t artwork) {
     }
 }
 
-/** Five-bit rows for uppercase letters A-Z followed by digits 0-9. */
-static const uint8_t
-    no_signal_font[NO_SIGNAL_FONT_GLYPHS][NO_SIGNAL_GLYPH_HEIGHT] = {
-        {0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11}, // A
-        {0x1e, 0x11, 0x11, 0x1e, 0x11, 0x11, 0x1e}, // B
-        {0x0e, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0e}, // C
-        {0x1e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1e}, // D
-        {0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f}, // E
-        {0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10}, // F
-        {0x0e, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0e}, // G
-        {0x11, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11}, // H
-        {0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1f}, // I
-        {0x07, 0x02, 0x02, 0x02, 0x12, 0x12, 0x0c}, // J
-        {0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11}, // K
-        {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f}, // L
-        {0x11, 0x1b, 0x15, 0x15, 0x11, 0x11, 0x11}, // M
-        {0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11}, // N
-        {0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e}, // O
-        {0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10, 0x10}, // P
-        {0x0e, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0d}, // Q
-        {0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11}, // R
-        {0x0e, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e}, // S
-        {0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04}, // T
-        {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e}, // U
-        {0x11, 0x11, 0x11, 0x11, 0x11, 0x0a, 0x04}, // V
-        {0x11, 0x11, 0x11, 0x15, 0x15, 0x1b, 0x11}, // W
-        {0x11, 0x0a, 0x04, 0x04, 0x04, 0x0a, 0x11}, // X
-        {0x11, 0x0a, 0x04, 0x04, 0x04, 0x04, 0x04}, // Y
-        {0x1f, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1f}, // Z
-        {0x0e, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0e}, // 0
-        {0x04, 0x0c, 0x04, 0x04, 0x04, 0x04, 0x0e}, // 1
-        {0x0e, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1f}, // 2
-        {0x1e, 0x01, 0x01, 0x0e, 0x01, 0x01, 0x1e}, // 3
-        {0x02, 0x06, 0x0a, 0x12, 0x1f, 0x02, 0x02}, // 4
-        {0x1f, 0x10, 0x10, 0x1e, 0x01, 0x01, 0x1e}, // 5
-        {0x0e, 0x10, 0x10, 0x1e, 0x11, 0x11, 0x0e}, // 6
-        {0x1f, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08}, // 7
-        {0x0e, 0x11, 0x11, 0x0e, 0x11, 0x11, 0x0e}, // 8
-        {0x0e, 0x11, 0x11, 0x0f, 0x01, 0x01, 0x0e}, // 9
-};
-
 /**
  * @brief Complete a composable raw scanline and mark it ready.
  *
@@ -143,28 +96,6 @@ static void finish_raw_scanline(scanvideo_scanline_buffer_t *scanline_buffer,
     tokens[P2000T_RAW_SCANLINE_TOKENS - 1] = 0;
     scanline_buffer->data_used = P2000T_RAW_SCANLINE_WORDS;
     scanline_buffer->status = SCANLINE_OK;
-}
-
-/**
- * @brief Return one bitmap-font row for a supported character.
- *
- * This lookup renders only the fixed no-signal status text; it does not
- * inspect or interpret captured source pixels. Unsupported characters are
- * blank, except for a period represented by one pixel on the final row.
- *
- * @param character Character to look up.
- * @param row Zero-based row within the seven-row glyph.
- * @return Five low-order bits containing the requested glyph row.
- */
-static inline uint8_t no_signal_glyph_row(char character, unsigned row) {
-    hard_assert(row < NO_SIGNAL_GLYPH_HEIGHT);
-    if (character >= 'A' && character <= 'Z') {
-        return no_signal_font[(unsigned)(character - 'A')][row];
-    }
-    if (character >= '0' && character <= '9') {
-        return no_signal_font[26u + (unsigned)(character - '0')][row];
-    }
-    return character == '.' && row == 6u ? 0x04u : 0x00u;
 }
 
 /**
@@ -194,7 +125,8 @@ static void __not_in_flash_func(render_no_signal_text)(
         const unsigned character_x =
             text_left +
             (unsigned)index * (NO_SIGNAL_GLYPH_WIDTH + 1u) * x_scale;
-        const uint8_t row = no_signal_glyph_row(message[index], font_row);
+        const uint8_t row =
+            p2000t_no_signal_glyph_row(message[index], font_row);
         for (unsigned column = 0; column < NO_SIGNAL_GLYPH_WIDTH; ++column) {
             if ((row & (0x10u >> column)) == 0u) {
                 continue;

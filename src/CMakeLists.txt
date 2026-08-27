@@ -38,6 +38,14 @@ add_executable(${FIRMWARE_TARGET}
     p2000t_video_renderer.c
 )
 
+# RGB111 USB framebuffer streaming is deployed on RP2350 first. Keeping the
+# large snapshot and TinyUSB FIFO out of the Pico build preserves RP2040 SRAM.
+if(PICO_BOARD STREQUAL "pico2")
+    target_sources(${FIRMWARE_TARGET} PRIVATE
+        p2000t_usb_stream.c
+    )
+endif()
+
 target_include_directories(${FIRMWARE_TARGET} PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
 )
@@ -80,6 +88,14 @@ target_compile_definitions(${FIRMWARE_TARGET} PRIVATE
     PICO_SCANVIDEO_SCANLINE_BUFFER_COUNT=8
 )
 
+if(PICO_BOARD STREQUAL "pico2")
+    target_compile_definitions(${FIRMWARE_TARGET} PRIVATE
+        CFG_TUD_CDC_RX_BUFSIZE=256
+        CFG_TUD_CDC_TX_BUFSIZE=4096
+        CFG_TUD_CDC_EP_BUFSIZE=64
+    )
+endif()
+
 if(P2000T_PROTOTYPE_V1_MIRRORED_DIN)
     target_compile_definitions(${FIRMWARE_TARGET} PRIVATE
         P2000T_PROTOTYPE_V1_MIRRORED_DIN=1)
@@ -95,6 +111,13 @@ set_source_files_properties(
     PROPERTIES
     COMPILE_OPTIONS "-Wall;-Wextra;-Wpedantic"
 )
+
+if(PICO_BOARD STREQUAL "pico2")
+    set_source_files_properties(
+        p2000t_usb_stream.c
+        PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra;-Wpedantic"
+    )
+endif()
 
 pico_enable_stdio_uart(${FIRMWARE_TARGET} 0)
 pico_enable_stdio_usb(${FIRMWARE_TARGET} 1)
