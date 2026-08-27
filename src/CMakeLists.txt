@@ -25,11 +25,11 @@ function(embed_no_connection_image symbol relative_source)
 endfunction()
 
 embed_no_connection_image(no_connection_image_green_phosphor
-    "assets/no_connection_concepts/firmware_assets/04_green_phosphor.idx4")
+    "assets/no_connection/green_phosphor.idx4")
 embed_no_connection_image(no_connection_image_synthwave
-    "assets/no_connection_concepts/firmware_assets/05_synthwave.idx4")
+    "assets/no_connection/synthwave.idx4")
 embed_no_connection_image(no_connection_image_amber_circuit
-    "assets/no_connection_concepts/firmware_assets/08_amber_circuit.idx4")
+    "assets/no_connection/amber_circuit.idx4")
 
 add_executable(${FIRMWARE_TARGET}
     firmware.c

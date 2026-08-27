@@ -69,9 +69,9 @@ press `1` for green phosphor, `2` for synthwave, or `3` for amber circuit. The
 choice takes effect atomically at the next VGA frame and is not persisted
 across a power cycle.
 
-The complete concept catalog and reproduction instructions are in
-`assets/no_connection_concepts/README.md`. Custom 640×480 artwork can still be
-encoded with `tools/encode_no_connection.py` after installing Pillow.
+The three final 640×480 previews and their matching firmware assets are kept
+together in `assets/no_connection/`. Custom 640×480 artwork can be encoded
+with `tools/encode_no_connection.py` after installing Pillow.
 
 ## USB controls
 
