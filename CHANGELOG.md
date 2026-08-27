@@ -44,6 +44,10 @@ Notable project changes are recorded here.
   interrupting its binary screen stream.
 - Source-color lookup tables are triple-buffered and adopted at VGA frame
   boundaries so palette changes cannot split a frame between two palettes.
+- Viewer configuration edits are now applied to the connected Pico 2
+  immediately; flash persistence remains an explicit action.
+- The on-board Pico LED now breathes slowly while seeking a P2000T signal and
+  blinks at 0.5-second intervals while valid input is present.
 
 ## 0.2.0 - 2026-08-27
 

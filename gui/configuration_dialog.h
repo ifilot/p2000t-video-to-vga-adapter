@@ -28,12 +28,13 @@ class ConfigurationDialog final : public QDialog {
     void setConfiguration(const PicoConfiguration &configuration);
 
   signals:
-    void applyRequested(const PicoConfiguration &configuration);
+    void configurationChanged(const PicoConfiguration &configuration);
     void saveRequested(const PicoConfiguration &configuration);
     void reloadRequested();
     void defaultsRequested();
 
   private:
+    void applyLiveChange();
     void chooseColor(int index);
     void updateColorButton(int index);
     void updateStorageStatus(const PicoConfiguration &configuration);

@@ -348,7 +348,7 @@ private:
     void openConfigurationDialog() {
         ConfigurationDialog dialog(configuration_, this);
         configuration_dialog_ = &dialog;
-        connect(&dialog, &ConfigurationDialog::applyRequested, this,
+        connect(&dialog, &ConfigurationDialog::configurationChanged, this,
                 [this](const PicoConfiguration &configuration) {
                     sendConfiguration(configuration, false);
                 });

@@ -18,12 +18,12 @@ When launched, the viewer attempts to connect to the first detected Pico USB
 CDC port and start the selected stream encoding. Manual port refresh and
 connect/disconnect controls remain available. Adapter > Configure Pico 2 opens
 a modal with exact spin boxes for capture alignment, an artwork selector, and
-eight RGB444 color rows with channel spinners and color pickers. Apply previews
-the values, Reload from Pico retrieves the saved flash copy, Factory defaults
-restores firmware defaults, and Save to Pico writes a CRC-protected persistent
-copy. These controls require firmware containing the matching structured
-control protocol. File > Exit and Help > About provide the standard application
-menu entries.
+eight RGB444 color rows with channel spinners and color pickers. Every edit is
+sent to the Pico immediately for live debugging. Reload from Pico retrieves the
+saved flash copy, Factory defaults restores firmware defaults, and Save to Pico
+writes the current values as a CRC-protected persistent copy. These controls
+require firmware containing the matching structured control protocol. File >
+Exit and Help > About provide the standard application menu entries.
 
 The firmware command `c` starts the recommended PackBits stream, `r` starts a
 raw stream, and `q` returns it to the normal USB console. Streaming is currently

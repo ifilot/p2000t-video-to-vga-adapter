@@ -28,8 +28,9 @@ ConfigurationDialog::ConfigurationDialog(const PicoConfiguration &configuration,
     auto *layout = new QVBoxLayout(this);
     auto *intro = new QLabel(
         QStringLiteral("Tune the capture geometry and the eight RGB444 "
-                       "source colors. Apply changes to preview them on VGA "
-                       "and in the viewer."),
+                       "source colors. Every change is applied immediately "
+                       "to the Pico 2 and the viewer. Saving to flash remains "
+                       "a separate action."),
         this);
     intro->setWordWrap(true);
     layout->addWidget(intro);
@@ -57,6 +58,14 @@ ConfigurationDialog::ConfigurationDialog(const PicoConfiguration &configuration,
     captureForm->addRow(QStringLiteral("Fine sample phase:"), phase_);
     captureForm->addRow(QStringLiteral("Horizontal start:"), horizontal_);
     captureForm->addRow(QStringLiteral("No-signal artwork:"), artwork_);
+    connect(vertical_, &QSpinBox::valueChanged, this,
+            [this] { applyLiveChange(); });
+    connect(phase_, &QSpinBox::valueChanged, this,
+            [this] { applyLiveChange(); });
+    connect(horizontal_, &QSpinBox::valueChanged, this,
+            [this] { applyLiveChange(); });
+    connect(artwork_, &QComboBox::currentIndexChanged, this,
+            [this] { applyLiveChange(); });
     layout->addWidget(capture);
 
     auto *palette =
@@ -93,8 +102,10 @@ ConfigurationDialog::ConfigurationDialog(const PicoConfiguration &configuration,
             (*channels[static_cast<size_t>(channel)])[static_cast<size_t>(
                 index)] = spinner;
             paletteGrid->addWidget(spinner, index + 1, channel + 2);
-            connect(spinner, &QSpinBox::valueChanged, this,
-                    [this, index] { updateColorButton(index); });
+            connect(spinner, &QSpinBox::valueChanged, this, [this, index] {
+                updateColorButton(index);
+                applyLiveChange();
+            });
         }
     }
     layout->addWidget(palette);
@@ -120,20 +131,20 @@ ConfigurationDialog::ConfigurationDialog(const PicoConfiguration &configuration,
     layout->addWidget(storage);
 
     auto *buttons =
-        new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel |
-                                 QDialogButtonBox::Apply,
-                             Qt::Horizontal, this);
-    connect(buttons->button(QDialogButtonBox::Apply), &QPushButton::clicked,
-            this, [this] { emit applyRequested(this->configuration()); });
-    connect(buttons, &QDialogButtonBox::accepted, this, [this] {
-        emit applyRequested(this->configuration());
-        accept();
-    });
-    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+        new QDialogButtonBox(QDialogButtonBox::Close, Qt::Horizontal, this);
+    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::accept);
     layout->addWidget(buttons);
 
     setConfiguration(configuration);
     resize(620, sizeHint().height());
+}
+
+void ConfigurationDialog::applyLiveChange() {
+    storage_status_->setText(QStringLiteral(
+        "Applying live; use Save to Pico to keep these settings after "
+        "restart."));
+    storage_status_->setStyleSheet(QStringLiteral("color: #205080;"));
+    emit configurationChanged(configuration());
 }
 
 PicoConfiguration ConfigurationDialog::configuration() const {
@@ -185,9 +196,17 @@ void ConfigurationDialog::chooseColor(int index) {
     if (!selected.isValid()) {
         return;
     }
-    red_[static_cast<size_t>(index)]->setValue((selected.red() + 8) / 17);
-    green_[static_cast<size_t>(index)]->setValue((selected.green() + 8) / 17);
-    blue_[static_cast<size_t>(index)]->setValue((selected.blue() + 8) / 17);
+    {
+        const QSignalBlocker redBlock(red_[static_cast<size_t>(index)]);
+        const QSignalBlocker greenBlock(green_[static_cast<size_t>(index)]);
+        const QSignalBlocker blueBlock(blue_[static_cast<size_t>(index)]);
+        red_[static_cast<size_t>(index)]->setValue((selected.red() + 8) / 17);
+        green_[static_cast<size_t>(index)]->setValue((selected.green() + 8) /
+                                                     17);
+        blue_[static_cast<size_t>(index)]->setValue((selected.blue() + 8) / 17);
+    }
+    updateColorButton(index);
+    applyLiveChange();
 }
 
 void ConfigurationDialog::updateColorButton(int index) {

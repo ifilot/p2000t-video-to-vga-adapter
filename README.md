@@ -23,6 +23,7 @@ Hardware and firmware for converting the Philips P2000T RGBS output to
 - Horizontally qualified CSYNC capture
 - 640×480 at 60 Hz RGB444 VGA output
 - Three selectable on-screen signal-loss designs
+- On-board LED breathing while seeking and blinking during valid capture
 - USB serial controls and capture statistics
 - Pico 2 USB screen streaming at a target 25 FPS with a Qt 6 viewer
 - Pico and experimental Pico 2 builds
@@ -74,6 +75,11 @@ deadline. Amber circuit is the power-on default. While connected over USB,
 press `1` for green phosphor, `2` for synthwave, or `3` for amber circuit. The
 choice takes effect atomically at the next VGA frame and is not persisted
 across a power cycle.
+
+The on-board Pico LED indicates input state independently of USB: while the
+adapter is seeking a valid P2000T video signal it slowly fades in and out over
+a 2.5-second cycle. Once a valid signal is detected, it changes to a
+full-brightness activity blink with 0.5 seconds on and 0.5 seconds off.
 
 The three final 640×480 previews and their matching firmware assets are kept
 together in `assets/no_connection/`. Custom 640×480 artwork can be encoded

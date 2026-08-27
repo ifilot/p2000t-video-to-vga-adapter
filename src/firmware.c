@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "hardware/clocks.h"
+#include "hardware/pwm.h"
 #include "hardware/vreg.h"
 #include "p2000t_capture.h"
 #include "p2000t_control_protocol.h"
@@ -46,6 +47,13 @@ enum {
     SYSTEM_CLOCK_KHZ = 252000,     /**< Overclocked system frequency. */
     SYSTEM_CORE_VOLTAGE_MV = 1300, /**< Core voltage used at 252 MHz. */
     VGA_READY_MAGIC = 0x56474154,  /**< Core-1 VGA-ready FIFO token. */
+    STATUS_LED_MAX_LEVEL = 255, /**< Maximum logical brightness. */
+    STATUS_LED_PWM_WRAP = 65535, /**< Full 16-bit PWM brightness range. */
+    STATUS_LED_PWM_CLOCK_DIVIDER = 8, /**< About 480 Hz at 252 MHz. */
+    STATUS_LED_SERVICE_INTERVAL_US = 5000, /**< 200 Hz LED update rate. */
+    STATUS_LED_ACTIVE_INTERVAL_US = 500000, /**< Connected on/off interval. */
+    STATUS_LED_SEEK_CYCLE_US = 2500000, /**< Complete seeking breath cycle. */
+    STATUS_LED_SEEK_HALF_CYCLE_US = STATUS_LED_SEEK_CYCLE_US / 2,
 };
 
 _Static_assert(P2000T_VGA_RENDER_WIDTH *P2000T_VGA_HORIZONTAL_SCALE ==
@@ -143,6 +151,13 @@ static p2000t_settings_t stored_settings;
 static bool stored_settings_valid;
 static bool settings_save_failed;
 
+/** On-board LED state, owned exclusively by the control core. */
+static uint64_t status_led_state_started_us;
+static uint64_t status_led_next_service_us;
+static unsigned status_led_previous_level = STATUS_LED_MAX_LEVEL + 1u;
+static bool status_led_previous_signal_present;
+static bool status_led_state_initialized;
+
 /** Incremental structured-control packet receiver. */
 static uint8_t control_packet[P2000T_CONTROL_PACKET_SIZE];
 static unsigned control_packet_offset;
@@ -193,6 +208,81 @@ static inline uint32_t load_statistic(const volatile uint32_t *value) {
 static inline void store_statistic(volatile uint32_t *destination,
                                    uint32_t value) {
     __atomic_store_n(destination, value, __ATOMIC_RELAXED);
+}
+
+/** @brief Set the on-board LED PWM level, respecting active-low boards. */
+static void status_led_set_level(unsigned level) {
+    hard_assert(level <= STATUS_LED_MAX_LEVEL);
+    if (level == status_led_previous_level) {
+        return;
+    }
+    status_led_previous_level = level;
+#if defined(PICO_DEFAULT_LED_PIN_INVERTED) && PICO_DEFAULT_LED_PIN_INVERTED
+    level = STATUS_LED_MAX_LEVEL - level;
+#endif
+    pwm_set_gpio_level(PICO_DEFAULT_LED_PIN,
+                       (uint16_t)(level *
+                                  (STATUS_LED_PWM_WRAP /
+                                   STATUS_LED_MAX_LEVEL)));
+}
+
+/** @brief Configure low-frequency hardware PWM for the on-board LED. */
+static void status_led_initialize(void) {
+    gpio_set_function(PICO_DEFAULT_LED_PIN, GPIO_FUNC_PWM);
+    const unsigned slice = pwm_gpio_to_slice_num(PICO_DEFAULT_LED_PIN);
+    pwm_config config = pwm_get_default_config();
+    pwm_config_set_clkdiv_int(&config, STATUS_LED_PWM_CLOCK_DIVIDER);
+    pwm_config_set_wrap(&config, STATUS_LED_PWM_WRAP);
+    pwm_init(slice, &config, true);
+    status_led_set_level(0u);
+    status_led_next_service_us = time_us_64();
+}
+
+/**
+ * @brief Update the on-board LED for seeking or active capture.
+ *
+ * A credible P2000T signal produces a 0.5-second on/off activity blink. While
+ * seeking, a gamma-shaped 2.5-second triangle wave controls a quiet 480 Hz
+ * hardware PWM carrier. Brightness calculations remain capped at 200 Hz,
+ * independently of the much faster USB streaming loop.
+ *
+ * @param signal_present Whether the VGA core has adopted a valid input signal.
+ */
+static void status_led_service(bool signal_present) {
+    const uint64_t now_us = time_us_64();
+    if (now_us < status_led_next_service_us) {
+        return;
+    }
+    status_led_next_service_us = now_us + STATUS_LED_SERVICE_INTERVAL_US;
+
+    if (!status_led_state_initialized ||
+        signal_present != status_led_previous_signal_present) {
+        status_led_state_initialized = true;
+        status_led_previous_signal_present = signal_present;
+        status_led_state_started_us = now_us;
+    }
+
+    const uint32_t elapsed_us =
+        (uint32_t)(now_us - status_led_state_started_us);
+    unsigned level;
+    if (signal_present) {
+        level = ((elapsed_us / STATUS_LED_ACTIVE_INTERVAL_US) & 1u) == 0u
+                    ? STATUS_LED_MAX_LEVEL
+                    : 0u;
+    } else {
+        const uint32_t phase_us = elapsed_us % STATUS_LED_SEEK_CYCLE_US;
+        const uint32_t ramp_us =
+            phase_us <= STATUS_LED_SEEK_HALF_CYCLE_US
+                ? phase_us
+                : STATUS_LED_SEEK_CYCLE_US - phase_us;
+        const unsigned linear_level =
+            (ramp_us * STATUS_LED_MAX_LEVEL) /
+            STATUS_LED_SEEK_HALF_CYCLE_US;
+        level = (linear_level * linear_level + STATUS_LED_MAX_LEVEL - 1u) /
+                STATUS_LED_MAX_LEVEL;
+    }
+
+    status_led_set_level(level);
 }
 
 /**
@@ -854,12 +944,16 @@ int main(void) {
         panic("Unable to start VGA rendering core");
     }
     scanvideo_timing_enable(true);
+    status_led_initialize();
 
     bool announced = false;
     while (true) {
+        const bool signal_present =
+            load_statistic(&vga_statistics.signal_present) != 0u;
+        status_led_service(signal_present);
         if (!stdio_usb_connected()) {
             announced = false;
-            sleep_ms(10);
+            sleep_us(STATUS_LED_SERVICE_INTERVAL_US);
             continue;
         }
         if (!announced) {
@@ -871,12 +965,12 @@ int main(void) {
 #if defined(PICO_RP2350) && PICO_RP2350
         if (p2000t_usb_stream_active()) {
             p2000t_usb_stream_service(
-                load_statistic(&vga_statistics.signal_present) != 0u,
+                signal_present,
                 load_statistic(&vga_statistics.no_signal_artwork));
             sleep_us(100u);
             continue;
         }
 #endif
-        sleep_ms(10);
+        sleep_us(STATUS_LED_SERVICE_INTERVAL_US);
     }
 }
