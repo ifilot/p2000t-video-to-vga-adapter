@@ -14,9 +14,8 @@
 namespace {
 
 const std::array<QRgb, 8> kPalette = {
-    qRgb(0, 0, 0),       qRgb(255, 0, 0),   qRgb(0, 255, 0),
-    qRgb(255, 255, 0),   qRgb(0, 0, 255),   qRgb(255, 0, 255),
-    qRgb(0, 255, 255),   qRgb(255, 255, 255),
+    qRgb(0, 0, 0),   qRgb(255, 0, 0),   qRgb(0, 255, 0),   qRgb(255, 255, 0),
+    qRgb(0, 0, 255), qRgb(255, 0, 255), qRgb(0, 255, 255), qRgb(255, 255, 255),
 };
 
 QImage makeFrame() {
@@ -47,6 +46,11 @@ int main() {
     const EngineeringCandidateMetrics stableMetrics = stable.finalize();
     require(stableMetrics.unstablePixels == 0,
             "stable image reported temporal changes");
+    require(stableMetrics.robustFrames == 2 &&
+                stableMetrics.coherentOutlierFrames == 0 &&
+                stableMetrics.robustUnstablePixels == 0 &&
+                stableMetrics.medianFrameMismatches == 0,
+            "stable robust temporal metrics are incorrect");
     require(stableMetrics.isolatedPixels == 0 &&
                 stableMetrics.thirdColorPixels == 0,
             "clean edge reported a spatial transient");
@@ -64,6 +68,9 @@ int main() {
     require(changingMetrics.unstableEvenLines == 1 &&
                 changingMetrics.unstableOddLines == 0,
             "logical odd/even temporal split is incorrect");
+    require(changingMetrics.robustFrames == 3 &&
+                changingMetrics.robustUnstablePixels == 1,
+            "robust temporal mismatch count is incorrect");
 
     EngineeringCandidateAccumulator transient(kPalette);
     QImage third = base;
@@ -77,5 +84,18 @@ int main() {
             "artifact did not worsen the quality score");
     require(!transientMetrics.modalImage.isNull(),
             "modal diagnostic image was not produced");
+
+    QImage fidelityCandidate = base;
+    reinterpret_cast<QRgb *>(fidelityCandidate.scanLine(0))[0] = kPalette[0];
+    reinterpret_cast<QRgb *>(fidelityCandidate.scanLine(1))[0] = kPalette[0];
+    reinterpret_cast<QRgb *>(fidelityCandidate.scanLine(0))[4] = kPalette[4];
+    reinterpret_cast<QRgb *>(fidelityCandidate.scanLine(1))[4] = kPalette[4];
+    const EngineeringFidelityMetrics fidelity =
+        compareEngineeringModals(fidelityCandidate, base);
+    require(fidelity.valid && fidelity.pixels == 16 &&
+                fidelity.mismatchedPixels == 2 && fidelity.erasedPixels == 1 &&
+                fidelity.filledPixels == 0 && fidelity.recoloredPixels == 1 &&
+                fidelity.mismatchPpm == 125000,
+            "modal spatial-fidelity classification is incorrect");
     return EXIT_SUCCESS;
 }

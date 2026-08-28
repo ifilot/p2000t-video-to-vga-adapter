@@ -27,6 +27,11 @@ a source-frame boundary whenever a non-window mode is selected.
   three samples differ, it chooses the early endpoint.
 - `window-late` uses the same atomic vote but chooses the late endpoint for an
   all-distinct transition.
+- `window-confidence` uses `window-late` unchanged on one logical row parity.
+  On the other parity it copies a paired half-dot only when that half's three
+  samples are unanimous and the other half's samples are not. Two unanimous
+  but different colors remain an edge, so the mode does not globally duplicate
+  dots or erase stable geometry.
 
 The early/late pair is deliberate. A measured blue-cyan-white sequence has no
 three-sample mode, but cyan is known to be a one-tick intermediate color. Both
@@ -44,10 +49,18 @@ per output, changed output samples, all-distinct windows, per-channel changes,
 and a line-deadline flag. The Codex lab bridge stores these fields beside every
 PNG and aggregates them in `result.json`.
 
-Version 0.4.0 stores the complete reconstruction mode in a new flash-record
-revision while continuing to read v0.3.x records. Pico 2 factory defaults use
-`window-center`, phase -1, odd-line correction +1, and rate trim 0 as the
-balanced compromise measured across the caption and engineering test pages.
-The original Pico retains raw reconstruction and phase-zero defaults. A mode
-switch is adopted only after the current source frame completes, so no captured
-frame is split between PIO programs or policies.
+The confidence guard is deliberately parity-aware. It applies on logical odd
+rows, which correspond to physical even P2000T lines at the default first
+visible line 57. The ordinary late policy remains active on logical even rows;
+changing the first visible line also shifts this physical mapping.
+
+Version 0.4.0 introduced the complete reconstruction-mode flash record while
+continuing to read v0.3.x records. Version 0.4.1 promotes the validated
+`window-confidence`, phase 0, odd-line correction +1, and rate trim 0 tuple to
+the Pico 2 factory default. Existing saved settings remain authoritative. The
+original Pico retains raw reconstruction and phase-zero defaults. A mode switch
+is adopted only after the current source frame completes, so no captured frame
+is split between PIO programs or policies. When confidence is the power-on
+mode, Pico 2 starts the same six-tap engine with the lightweight center policy
+and adopts confidence at a frame boundary after VGA startup; the DMA engine is
+not reconfigured during this transition.

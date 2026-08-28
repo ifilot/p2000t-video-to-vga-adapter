@@ -29,9 +29,11 @@
 #endif
 
 enum {
-    DIAGNOSTIC_PIO_CLOCK_DIVIDER = 2,
+    TRIGGER_PIO_CLOCK_DIVIDER = 2,
+    RAW_PIO_CLOCK_DIVIDER = 1,
     TIMING_PIO_CLOCK_DIVIDER = 4,
-    DIAGNOSTIC_TX_SERVICE_BUDGET = 1024,
+    DIAGNOSTIC_TX_SERVICE_BUDGET = 64,
+    DIAGNOSTIC_TX_DRAIN_US = 10000,
     CAPTURE_OVERRUN_TOLERANCE_US = 50,
 };
 
@@ -43,6 +45,8 @@ typedef enum {
     DIAGNOSTIC_CAPTURING_RAW,
     DIAGNOSTIC_SENDING_RAW,
     DIAGNOSTIC_SENDING_COMPLETE,
+    DIAGNOSTIC_DRAINING_TX,
+    DIAGNOSTIC_WAITING_ACK,
 } diagnostic_state_t;
 
 /** The timing trace is the largest record; raw bursts reuse the same SRAM. */
@@ -72,11 +76,16 @@ static const uint8_t *tx_payload;
 static size_t tx_payload_size;
 static size_t tx_header_offset;
 static size_t tx_payload_offset;
+static size_t tx_guard_offset;
+static uint8_t tx_guard[P2000T_DIAGNOSTIC_GUARD_SIZE];
 static volatile bool capture_finished;
 static volatile uint32_t capture_started_us;
 static volatile uint32_t capture_duration_us;
 static volatile bool capture_stalled;
 static uint32_t expected_capture_duration_us;
+static diagnostic_state_t drained_record_state;
+static uint32_t tx_drain_started_us;
+static unsigned pending_host_action;
 
 static void __not_in_flash_func(diagnostic_trigger_irq)(void) {
     pio_interrupt_clear(diagnostic_pio, 1u);
@@ -162,7 +171,7 @@ static void initialize_trigger(void) {
     pio_sm_config config = p2000t_diagnostic_trigger_program_get_default_config(
         trigger_offset);
     sm_config_set_jmp_pin(&config, P2000T_SYNC_PIN);
-    sm_config_set_clkdiv_int_frac8(&config, DIAGNOSTIC_PIO_CLOCK_DIVIDER, 0u);
+    sm_config_set_clkdiv_int_frac8(&config, TRIGGER_PIO_CLOCK_DIVIDER, 0u);
     pio_sm_init(diagnostic_pio, trigger_sm, trigger_offset, &config);
     pio_sm_clear_fifos(diagnostic_pio, trigger_sm);
     pio_sm_restart(diagnostic_pio, trigger_sm);
@@ -184,8 +193,7 @@ static void arm_capture(bool timing) {
                           timing ? P2000T_SYNC_PIN : P2000T_INPUT_PIN_BASE);
     sm_config_set_in_shift(&config, false, true, 32u);
     sm_config_set_clkdiv_int_frac8(
-        &config, timing ? TIMING_PIO_CLOCK_DIVIDER
-                        : DIAGNOSTIC_PIO_CLOCK_DIVIDER,
+        &config, timing ? TIMING_PIO_CLOCK_DIVIDER : RAW_PIO_CLOCK_DIVIDER,
         0u);
     pio_sm_init(diagnostic_pio, sampler_sm, sampler_offset, &config);
     pio_sm_clear_fifos(diagnostic_pio, sampler_sm);
@@ -323,6 +331,18 @@ static void begin_record(unsigned type, uint32_t flags, uint32_t sample_rate,
     tx_payload_size = payload_size;
     tx_header_offset = 0u;
     tx_payload_offset = 0u;
+    tx_guard_offset = 0u;
+    if (payload_size >= P2000T_DIAGNOSTIC_GUARD_DUPLICATE_SIZE) {
+        memcpy(tx_guard,
+               tx_payload + payload_size -
+                                P2000T_DIAGNOSTIC_GUARD_DUPLICATE_SIZE,
+               P2000T_DIAGNOSTIC_GUARD_DUPLICATE_SIZE);
+    } else {
+        memset(tx_guard, 0, P2000T_DIAGNOSTIC_GUARD_DUPLICATE_SIZE);
+    }
+    memcpy(&tx_guard[P2000T_DIAGNOSTIC_GUARD_DUPLICATE_SIZE],
+           P2000T_DIAGNOSTIC_GUARD_MAGIC,
+           P2000T_DIAGNOSTIC_GUARD_MAGIC_SIZE);
     diagnostic_state = state;
 }
 
@@ -332,8 +352,8 @@ static void begin_complete_record(void) {
                  0u, 0u, 0u, 0u, DIAGNOSTIC_SENDING_COMPLETE);
 }
 
-static void advance_after_transmit(void) {
-    switch (diagnostic_state) {
+static void advance_after_transmit(diagnostic_state_t completed_state) {
+    switch (completed_state) {
     case DIAGNOSTIC_SENDING_SESSION:
         if (cancel_requested) {
             begin_complete_record();
@@ -365,6 +385,17 @@ static void advance_after_transmit(void) {
     }
 }
 
+static void apply_host_action(bool retry) {
+    if (retry) {
+        tx_header_offset = 0u;
+        tx_payload_offset = 0u;
+        tx_guard_offset = 0u;
+        diagnostic_state = drained_record_state;
+    } else {
+        advance_after_transmit(drained_record_state);
+    }
+}
+
 static void service_transmit(void) {
     size_t budget = DIAGNOSTIC_TX_SERVICE_BUDGET;
     while (budget != 0u) {
@@ -374,12 +405,19 @@ static void service_transmit(void) {
         }
         const uint8_t *source;
         size_t remaining;
+        enum { TX_HEADER, TX_PAYLOAD, TX_GUARD } part;
         if (tx_header_offset < P2000T_DIAGNOSTIC_HEADER_SIZE) {
+            part = TX_HEADER;
             source = &diagnostic_header[tx_header_offset];
             remaining = P2000T_DIAGNOSTIC_HEADER_SIZE - tx_header_offset;
-        } else {
+        } else if (tx_payload_offset < tx_payload_size) {
+            part = TX_PAYLOAD;
             source = &tx_payload[tx_payload_offset];
             remaining = tx_payload_size - tx_payload_offset;
+        } else {
+            part = TX_GUARD;
+            source = &tx_guard[tx_guard_offset];
+            remaining = P2000T_DIAGNOSTIC_GUARD_SIZE - tx_guard_offset;
         }
         size_t count = remaining;
         if (count > available) {
@@ -393,14 +431,19 @@ static void service_transmit(void) {
             break;
         }
         budget -= written;
-        if (tx_header_offset < P2000T_DIAGNOSTIC_HEADER_SIZE) {
+        if (part == TX_HEADER) {
             tx_header_offset += written;
-        } else {
+        } else if (part == TX_PAYLOAD) {
             tx_payload_offset += written;
+        } else {
+            tx_guard_offset += written;
         }
         if (tx_header_offset == P2000T_DIAGNOSTIC_HEADER_SIZE &&
-            tx_payload_offset == tx_payload_size) {
-            advance_after_transmit();
+            tx_payload_offset == tx_payload_size &&
+            tx_guard_offset == P2000T_DIAGNOSTIC_GUARD_SIZE) {
+            drained_record_state = diagnostic_state;
+            tx_drain_started_us = time_us_32();
+            diagnostic_state = DIAGNOSTIC_DRAINING_TX;
             break;
         }
     }
@@ -424,6 +467,7 @@ bool p2000t_diagnostics_start(unsigned start_line, unsigned line_count,
     session_id = time_us_32();
     record_sequence = 0u;
     cancel_requested = false;
+    pending_host_action = 0u;
     capture_duration_us = 0u;
     capture_stalled = false;
     expected_capture_duration_us = 0u;
@@ -441,6 +485,10 @@ void p2000t_diagnostics_cancel(void) {
         diagnostic_state == DIAGNOSTIC_CAPTURING_RAW) {
         stop_capture_hardware();
         begin_complete_record();
+    } else if (diagnostic_state == DIAGNOSTIC_WAITING_ACK) {
+        begin_complete_record();
+    } else if (diagnostic_state == DIAGNOSTIC_DRAINING_TX) {
+        pending_host_action = 1u;
     }
 }
 
@@ -450,10 +498,31 @@ void p2000t_diagnostics_stop(void) {
     tx_header_offset = 0u;
     tx_payload_offset = 0u;
     tx_payload_size = 0u;
+    tx_guard_offset = 0u;
+    tx_drain_started_us = 0u;
+    pending_host_action = 0u;
 }
 
 bool p2000t_diagnostics_active(void) {
     return diagnostic_state != DIAGNOSTIC_IDLE;
+}
+
+bool p2000t_diagnostics_acknowledge(uint32_t sequence, bool retry) {
+    if (sequence != record_sequence ||
+        (drained_record_state != DIAGNOSTIC_SENDING_TIMING &&
+         drained_record_state != DIAGNOSTIC_SENDING_RAW)) {
+        return false;
+    }
+    const unsigned action = retry ? 2u : 1u;
+    if (diagnostic_state == DIAGNOSTIC_DRAINING_TX) {
+        pending_host_action = action;
+        return true;
+    }
+    if (diagnostic_state != DIAGNOSTIC_WAITING_ACK) {
+        return false;
+    }
+    apply_host_action(retry);
+    return true;
 }
 
 void p2000t_diagnostics_service(void) {
@@ -462,6 +531,24 @@ void p2000t_diagnostics_service(void) {
     }
     if (!stdio_usb_connected()) {
         p2000t_diagnostics_stop();
+        return;
+    }
+    if (diagnostic_state == DIAGNOSTIC_DRAINING_TX) {
+        tud_cdc_write_flush();
+        if ((uint32_t)(time_us_32() - tx_drain_started_us) >=
+            DIAGNOSTIC_TX_DRAIN_US) {
+            if (drained_record_state == DIAGNOSTIC_SENDING_TIMING ||
+                drained_record_state == DIAGNOSTIC_SENDING_RAW) {
+                diagnostic_state = DIAGNOSTIC_WAITING_ACK;
+                if (pending_host_action != 0u) {
+                    const unsigned action = pending_host_action;
+                    pending_host_action = 0u;
+                    apply_host_action(action == 2u);
+                }
+            } else {
+                advance_after_transmit(drained_record_state);
+            }
+        }
         return;
     }
     if (diagnostic_state == DIAGNOSTIC_CAPTURING_TIMING && capture_finished) {

@@ -104,14 +104,31 @@ int main() {
                                     << (28u - (sample % 8u) * 4u);
     }
     p2000t_reconstruction_diagnostics_t diagnostics = {};
-    const std::uint32_t reconstructed = p2000t_reconstruct_window_group(
-        packedWords[0], packedWords[1], packedWords[2], lookup, &diagnostics);
+    std::uint8_t uncertainty = 0u;
+    const std::uint32_t reconstructed =
+        p2000t_reconstruct_window_group_with_evidence(
+            packedWords[0], packedWords[1], packedWords[2], lookup,
+            &diagnostics, &uncertainty);
     if (reconstructed != 0x17112467u || diagnostics.ambiguous_samples != 2u ||
-        diagnostics.corrected_samples != 4u) {
+        diagnostics.corrected_samples != 4u || uncertainty != 0xf7u) {
         std::fprintf(stderr,
-                     "Packed window reconstruction failed: %08x, %u/%u\n",
+                     "Packed window reconstruction failed: %08x, %u/%u/%02x\n",
                      reconstructed, diagnostics.corrected_samples,
-                     diagnostics.ambiguous_samples);
+                     diagnostics.ambiguous_samples, uncertainty);
+        return 1;
+    }
+
+    if (p2000t_guard_uncertain_pair(0x17u, 0u) != 0x17u ||
+        p2000t_guard_uncertain_pair(0x17u, 1u) != 0x11u ||
+        p2000t_guard_uncertain_pair(0x17u, 2u) != 0x77u ||
+        p2000t_guard_uncertain_pair(0x17u, 3u) != 0x17u ||
+        p2000t_guard_uncertain_pair(0x77u, 2u) != 0x77u) {
+        std::fputs("Confidence guard changed unsupported pair evidence\n",
+                   stderr);
+        return 1;
+    }
+    if (p2000t_guard_uncertain_pairs(0x12345678u, 0x93u) != 0x22335678u) {
+        std::fputs("Packed confidence guard failed\n", stderr);
         return 1;
     }
     return 0;

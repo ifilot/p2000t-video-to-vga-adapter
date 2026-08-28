@@ -18,6 +18,8 @@ void p2000t_diagnostics_cancel(void);
 void p2000t_diagnostics_stop(void);
 /** Return whether acquisition or diagnostic USB transmission is active. */
 bool p2000t_diagnostics_active(void);
+/** Acknowledge or request retransmission of the retained data record. */
+bool p2000t_diagnostics_acknowledge(uint32_t sequence, bool retry);
 /** Progress capture and bounded non-blocking USB transmission. */
 void p2000t_diagnostics_service(void);
 

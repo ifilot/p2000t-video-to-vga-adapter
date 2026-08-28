@@ -18,6 +18,13 @@ struct EngineeringCandidateMetrics {
     quint64 unstablePixels = 0;
     quint64 unstableEvenLines = 0;
     quint64 unstableOddLines = 0;
+    quint64 robustUnstablePixels = 0;
+    quint64 robustUnstableEvenLines = 0;
+    quint64 robustUnstableOddLines = 0;
+    quint64 medianFrameMismatches = 0;
+    quint64 robustFrameThreshold = 0;
+    int robustFrames = 0;
+    int coherentOutlierFrames = 0;
     quint64 isolatedPixels = 0;
     quint64 isolatedEvenLines = 0;
     quint64 isolatedOddLines = 0;
@@ -28,12 +35,29 @@ struct EngineeringCandidateMetrics {
     double instabilityPpm = 0.0;
     double evenInstabilityPpm = 0.0;
     double oddInstabilityPpm = 0.0;
+    double robustInstabilityPpm = 0.0;
+    double robustEvenInstabilityPpm = 0.0;
+    double robustOddInstabilityPpm = 0.0;
     double artifactPpm = 0.0;
     double score = 0.0;
     double evenScore = 0.0;
     double oddScore = 0.0;
     QImage modalImage;
 };
+
+struct EngineeringFidelityMetrics {
+    bool valid = false;
+    quint64 pixels = 0;
+    quint64 mismatchedPixels = 0;
+    quint64 erasedPixels = 0;
+    quint64 filledPixels = 0;
+    quint64 recoloredPixels = 0;
+    double mismatchPpm = 0.0;
+};
+
+/** Compare two modal images while counting each duplicated scanline once. */
+EngineeringFidelityMetrics compareEngineeringModals(const QImage &candidate,
+                                                    const QImage &reference);
 
 /**
  * Accumulates repeated viewer frames for one sampling setting.

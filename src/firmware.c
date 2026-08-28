@@ -550,6 +550,7 @@ static const char *sample_reconstruction_name(unsigned reconstruction) {
             "window-channel",
             "window-color-early",
             "window-color-late",
+            "window-confidence-guard",
         };
     return reconstruction < P2000T_CONTROL_SAMPLE_RECONSTRUCTION_COUNT
                ? names[reconstruction]
@@ -1092,6 +1093,12 @@ static void handle_control_packet(void) {
     case P2000T_CONTROL_CANCEL_DIAGNOSTICS:
         p2000t_diagnostics_cancel();
         break;
+    case P2000T_CONTROL_ACK_DIAGNOSTIC_RECORD:
+        p2000t_diagnostics_acknowledge(value, false);
+        break;
+    case P2000T_CONTROL_RETRY_DIAGNOSTIC_RECORD:
+        p2000t_diagnostics_acknowledge(value, true);
+        break;
 #endif
     default:
         return;
@@ -1224,6 +1231,19 @@ int main(void) {
     p2000t_video_renderer_set_source_palette(current_settings.palette);
     select_sample_reconstruction(current_reconstruction_mode, true);
 
+#if defined(PICO_RP2350) && PICO_RP2350
+    const bool defer_confidence_guard =
+        current_reconstruction_mode ==
+        P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_CONFIDENCE_GUARD;
+    if (defer_confidence_guard) {
+        /* Start the same six-tap DMA engine with its lightweight center
+           policy. Once VGA startup is complete, confidence is adopted at a
+           frame boundary without reconfiguring the ping-pong channels. */
+        hard_assert(p2000t_capture_set_reconstruction_mode(
+            P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_CENTER));
+    }
+#endif
+
     /* Scanvideo owns PIO0 and its fixed DMA channel. Capture then claims PIO1
        and two otherwise-unused DMA channels. */
     if (!scanvideo_setup(&firmware_vga_mode)) {
@@ -1244,6 +1264,12 @@ int main(void) {
         panic("Unable to start VGA rendering core");
     }
     scanvideo_timing_enable(true);
+#if defined(PICO_RP2350) && PICO_RP2350
+    if (defer_confidence_guard) {
+        hard_assert(p2000t_capture_set_reconstruction_mode(
+            current_reconstruction_mode));
+    }
+#endif
     status_led_initialize();
 
     bool announced = false;

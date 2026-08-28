@@ -21,6 +21,12 @@ void require(bool condition, const char *message) {
 } // namespace
 
 int main() {
+    static_assert(P2000T_CONTROL_PICO2_DEFAULT_PHASE == 0);
+    static_assert(P2000T_CONTROL_PICO2_DEFAULT_ODD_LINE_PHASE == 1);
+    static_assert(
+        P2000T_CONTROL_PICO2_DEFAULT_SAMPLE_RECONSTRUCTION ==
+        P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_CONFIDENCE_GUARD);
+
     CodexLabRequest request;
     QString error;
     require(
@@ -77,5 +83,27 @@ int main() {
             request.reconstruction ==
                 P2000T_CONTROL_SAMPLE_RECONSTRUCTION_SHARP_GUARDED,
         "sharp reconstruction mode was rejected");
+    require(
+        CodexLabBridge::decodeRequest(
+            R"({"protocol":1,"id":"confidence","command":"experiment","reference_run":"baseline-01","settings":{"reconstruction":"window-confidence"}})",
+            &request, &error) &&
+            request.reconstruction ==
+                P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_CONFIDENCE_GUARD &&
+            request.referenceRun == QStringLiteral("baseline-01"),
+        "confidence reconstruction mode or reference was rejected");
+    require(
+        CodexLabBridge::decodeRequest(
+            R"({"protocol":1,"id":"raw-trace","command":"diagnostic","start_line":280,"line_count":16,"repetitions":100})",
+            &request, &error) &&
+            request.command == CodexLabCommand::Diagnostic &&
+            request.diagnosticStartLine == 280 &&
+            request.diagnosticLineCount == 16 &&
+            request.diagnosticRepetitions == 100,
+        "diagnostic request was rejected or decoded incorrectly");
+    require(
+        !CodexLabBridge::decodeRequest(
+            R"({"protocol":1,"id":"bad-trace","command":"diagnostic","start_line":297,"line_count":16,"repetitions":100})",
+            &request, &error),
+        "out-of-range diagnostic start line was accepted");
     return EXIT_SUCCESS;
 }

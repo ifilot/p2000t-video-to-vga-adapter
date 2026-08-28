@@ -16,6 +16,7 @@
 #include <QSaveFile>
 
 #include "p2000t_control_protocol.h"
+#include "p2000t_diagnostic_protocol.h"
 
 namespace {
 
@@ -61,7 +62,8 @@ bool CodexLabBridge::initialize(const QString &rootDirectory, QString *error) {
         !root.mkpath(QStringLiteral("requests")) ||
         !root.mkpath(QStringLiteral("responses")) ||
         !root.mkpath(QStringLiteral("archive")) ||
-        !root.mkpath(QStringLiteral("runs"))) {
+        !root.mkpath(QStringLiteral("runs")) ||
+        !root.mkpath(QStringLiteral("diagnostics"))) {
         if (error != nullptr) {
             *error = QStringLiteral("Could not create the bridge directory %1")
                          .arg(QDir::toNativeSeparators(rootDirectory));
@@ -173,6 +175,16 @@ bool CodexLabBridge::decodeRequest(const QByteArray &payload,
     CodexLabRequest result;
     result.id = id;
     result.tag = object.value(QStringLiteral("tag")).toString().left(160);
+    const QString referenceRun =
+        object.value(QStringLiteral("reference_run")).toString();
+    if (!referenceRun.isEmpty() && !validId.match(referenceRun).hasMatch()) {
+        if (error != nullptr) {
+            *error = QStringLiteral(
+                "reference_run must be a safe existing run identifier");
+        }
+        return false;
+    }
+    result.referenceRun = referenceRun;
     if (command == QStringLiteral("status")) {
         result.command = CodexLabCommand::Status;
     } else if (command == QStringLiteral("save")) {
@@ -181,6 +193,23 @@ bool CodexLabBridge::decodeRequest(const QByteArray &payload,
         result.command = CodexLabCommand::Cancel;
     } else if (command == QStringLiteral("shutdown")) {
         result.command = CodexLabCommand::Shutdown;
+    } else if (command == QStringLiteral("diagnostic")) {
+        result.command = CodexLabCommand::Diagnostic;
+        if (!decodeRequiredInteger(
+                object, QStringLiteral("start_line"),
+                P2000T_DIAGNOSTIC_MIN_START_LINE,
+                P2000T_DIAGNOSTIC_MAX_START_LINE,
+                P2000T_CONTROL_DEFAULT_VERTICAL,
+                &result.diagnosticStartLine, error) ||
+            !decodeRequiredInteger(object, QStringLiteral("line_count"), 1,
+                                   P2000T_DIAGNOSTIC_MAX_LINES,
+                                   P2000T_DIAGNOSTIC_MAX_LINES,
+                                   &result.diagnosticLineCount, error) ||
+            !decodeRequiredInteger(object, QStringLiteral("repetitions"), 1,
+                                   P2000T_DIAGNOSTIC_MAX_REPETITIONS, 100,
+                                   &result.diagnosticRepetitions, error)) {
+            return false;
+        }
     } else if (command == QStringLiteral("experiment")) {
         result.command = CodexLabCommand::Experiment;
         const QJsonValue settingsValue =
@@ -229,12 +258,15 @@ bool CodexLabBridge::decodeRequest(const QByteArray &payload,
             } else if (reconstruction == QStringLiteral("window-late")) {
                 result.reconstruction =
                     P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_COLOR_LATE;
+            } else if (reconstruction == QStringLiteral("window-confidence")) {
+                result.reconstruction =
+                    P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_CONFIDENCE_GUARD;
             } else {
                 if (error != nullptr) {
                     *error = QStringLiteral(
                         "reconstruction must be raw, guarded, sharp, "
-                        "window-center, window-channel, window-early, or "
-                        "window-late");
+                        "window-center, window-channel, window-early, "
+                        "window-late, or window-confidence");
                 }
                 return false;
             }
@@ -248,8 +280,8 @@ bool CodexLabBridge::decodeRequest(const QByteArray &payload,
     } else {
         if (error != nullptr) {
             *error = QStringLiteral(
-                "command must be status, experiment, save, cancel, or "
-                "shutdown");
+                "command must be status, experiment, diagnostic, save, "
+                "cancel, or shutdown");
         }
         return false;
     }

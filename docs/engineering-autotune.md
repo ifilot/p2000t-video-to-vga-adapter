@@ -35,6 +35,8 @@ and records:
 
 - samples that differ from the per-pixel temporal mode, split by logical
   odd/even row;
+- the median per-frame mismatch count and a separate robust instability value
+  which excludes coherent high-change frames while retaining their count;
 - one-pixel islands whose two horizontal neighbors agree;
 - one-pixel third colors which match neither side of a color transition;
 - the modal image's horizontal transition count as a sharpness diagnostic.
@@ -54,6 +56,11 @@ again.
 This is an objective engineering heuristic, not a claim that every visible
 defect has one cause. The preserved captures and modal images allow the score
 and winner to be challenged or reanalyzed later.
+
+The ordinary instability total remains authoritative for the autotune score.
+The robust fields are additional diagnostics: they prevent a periodic source
+animation, such as a flashing SAA5050 test region, from being mistaken for a
+sampling regression while ensuring those frames remain visible in the log.
 
 ## Output directory
 

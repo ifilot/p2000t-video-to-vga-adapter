@@ -3,7 +3,7 @@
 
 cmake_minimum_required(VERSION 3.21)
 
-project(p2000t_vid2vga_capture VERSION 0.4.0 LANGUAGES CXX)
+project(p2000t_vid2vga_capture VERSION 0.4.1 LANGUAGES CXX)
 
 file(WRITE "${CMAKE_BINARY_DIR}/package-version.txt" "${PROJECT_VERSION}\n")
 

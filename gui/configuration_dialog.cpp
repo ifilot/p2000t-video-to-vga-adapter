@@ -83,6 +83,9 @@ ConfigurationDialog::ConfigurationDialog(const PicoConfiguration &configuration,
     sample_reconstruction_->addItem(
         QStringLiteral("126 MHz windows: atomic late endpoint"),
         P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_COLOR_LATE);
+    sample_reconstruction_->addItem(
+        QStringLiteral("126 MHz windows: confidence guard"),
+        P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_CONFIDENCE_GUARD);
     sample_reconstruction_->setToolTip(QStringLiteral(
         "The SAA5050 emits 240 nominal source dots. Stable reconstruction "
         "offers the legacy duplicate filter, a sharp two-tap filter, and Pico "

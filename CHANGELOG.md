@@ -2,6 +2,31 @@
 
 Notable project changes are recorded here.
 
+## 0.4.1 - 2026-08-29
+
+- Promoted the parity-aware `window-confidence` policy to the Pico 2 factory
+  default with phase 0, physical odd-line correction +1, and rate trim 0.
+  Existing saved settings remain authoritative and flash-compatible.
+- The confidence guard trusts a paired half-dot only when its three samples are
+  unanimous and the other half is uncertain. On the default viewport it guards
+  physical even source lines and preserves two unanimous but different colors
+  as a genuine edge.
+- On boot, Pico 2 starts the six-tap engine with its lightweight center policy
+  and adopts the confidence policy at a frame boundary after VGA startup. This
+  avoids reconfiguring DMA and keeps the validated live-transition behavior.
+- Raised the capture DMA interrupt priority to keep six-tap reconstruction
+  ahead of the next scanline deadline during startup and sustained capture.
+- Added reference-modal erased/filled/recolored pixel diagnostics and robust
+  temporal logging which separates coherent high-change frames from the
+  ordinary instability total.
+- Raised raw diagnostic sampling from 126 MHz to 252 MHz without changing the
+  production capture clock. Diagnostic records now use a guarded ACK/retry
+  exchange so a CRC failure can be recovered without losing the requested
+  burst, and the viewer preserves rejected records for investigation.
+- Added direct diagnostic recording to the Codex lab bridge and an offline
+  sampling-aperture analyzer for comparing reconstructed output against a
+  captured reference image.
+
 ## 0.4.0 - 2026-08-28
 
 - Added a frame-boundary-switchable Pico 2 capture engine which records two
@@ -18,7 +43,6 @@ Notable project changes are recorded here.
   active engine, and scanline-deadline failures.
 - Fixed tagged release packaging so the generated SAA5050 cartridge binary is
   downloaded with the firmware/viewer artifacts before publishing a release.
-
 ### Added
 
 - Pico 2 continuous USB capture streaming for 480×240 planar RGB111 frames,

@@ -13,18 +13,29 @@
 #include <QList>
 #include <QString>
 
-enum class CodexLabCommand { Status, Experiment, Save, Cancel, Shutdown };
+enum class CodexLabCommand {
+    Status,
+    Experiment,
+    Diagnostic,
+    Save,
+    Cancel,
+    Shutdown
+};
 
 struct CodexLabRequest {
     QString id;
     CodexLabCommand command = CodexLabCommand::Status;
     QString tag;
+    QString referenceRun;
     std::optional<int> phase;
     std::optional<int> oddLinePhase;
     std::optional<int> rateTrim;
     std::optional<int> reconstruction;
     int settlingFrames = 2;
     int captureFrames = 10;
+    int diagnosticStartLine = 1;
+    int diagnosticLineCount = 16;
+    int diagnosticRepetitions = 100;
 };
 
 struct CodexLabEnvelope {

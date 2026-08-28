@@ -119,6 +119,8 @@ QString reconstructionName(int reconstruction) {
         return QStringLiteral("window-early");
     case P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_COLOR_LATE:
         return QStringLiteral("window-late");
+    case P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_CONFIDENCE_GUARD:
+        return QStringLiteral("window-confidence");
     default:
         return QStringLiteral("invalid");
     }
@@ -805,7 +807,8 @@ class CaptureWindow final : public QMainWindow {
         status.insert(QStringLiteral("connected"), connected_);
         status.insert(QStringLiteral("signal_present"), last_signal_present_);
         status.insert(QStringLiteral("busy"),
-                      lab_experiment_active_ || lab_save_pending_);
+                      lab_experiment_active_ || lab_save_pending_ ||
+                          !diagnostic_lab_request_id_.isEmpty());
         status.insert(QStringLiteral("manual_operation_active"),
                       calibration_sweep_active_ || diagnostic_active_ ||
                           configuration_dialog_ != nullptr);
@@ -813,7 +816,9 @@ class CaptureWindow final : public QMainWindow {
             QStringLiteral("active_request_id"),
             lab_experiment_active_
                 ? lab_request_.id
-                : (lab_save_pending_ ? lab_save_request_id_ : QString()));
+                : (lab_save_pending_
+                       ? lab_save_request_id_
+                       : diagnostic_lab_request_id_));
         status.insert(QStringLiteral("bridge_root"),
                       lab_bridge_.rootDirectory());
         status.insert(QStringLiteral("live_settings"),
@@ -837,7 +842,8 @@ class CaptureWindow final : public QMainWindow {
             this, QStringLiteral("Codex lab bridge"),
             QStringLiteral(
                 "The Codex lab bridge is active. It accepts status, "
-                "non-persistent experiment, explicit save, and cancel "
+                "non-persistent experiment, lossless diagnostic, explicit "
+                "save, and cancel "
                 "commands in:\n\n%1\n\n"
                 "Connection: %2\nP2000T signal: %3\nExperiment: %4")
                 .arg(QDir::toNativeSeparators(lab_bridge_.rootDirectory()),
@@ -936,6 +942,16 @@ class CaptureWindow final : public QMainWindow {
                     respondToLabRequest(request.id, true,
                                         QStringLiteral("cancelled"), QString(),
                                         extra);
+                } else if (diagnostic_active_ &&
+                           !diagnostic_lab_request_id_.isEmpty()) {
+                    const QString cancelledId = diagnostic_lab_request_id_;
+                    requestDiagnosticCancellation();
+                    QJsonObject extra;
+                    extra.insert(QStringLiteral("cancelled_request_id"),
+                                 cancelledId);
+                    respondToLabRequest(request.id, true,
+                                        QStringLiteral("cancelling"),
+                                        QString(), extra);
                 } else {
                     respondToLabRequest(request.id, true,
                                         QStringLiteral("idle"));
@@ -1019,6 +1035,10 @@ class CaptureWindow final : public QMainWindow {
                     request.id, false, QStringLiteral("unavailable"),
                     connected_ ? QStringLiteral("No P2000T signal is present.")
                                : QStringLiteral("The Pico is not connected."));
+                continue;
+            }
+            if (request.command == CodexLabCommand::Diagnostic) {
+                startLabDiagnosticCapture(request);
                 continue;
             }
             startLabExperiment(request);
@@ -1310,6 +1330,10 @@ class CaptureWindow final : public QMainWindow {
         experiment.insert(QStringLiteral("protocol"), 1);
         experiment.insert(QStringLiteral("id"), request.id);
         experiment.insert(QStringLiteral("tag"), request.tag);
+        if (!request.referenceRun.isEmpty()) {
+            experiment.insert(QStringLiteral("reference_run"),
+                              request.referenceRun);
+        }
         experiment.insert(
             QStringLiteral("started_utc"),
             QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
@@ -1564,9 +1588,33 @@ class CaptureWindow final : public QMainWindow {
                 result.insert(QStringLiteral("error"),
                               QStringLiteral("Could not save modal.png."));
             } else {
-                metrics.modalImage = QImage();
+                if (!request.referenceRun.isEmpty()) {
+                    const QString referencePath =
+                        QDir(lab_bridge_.rootDirectory())
+                            .filePath(QStringLiteral("runs/%1/modal.png")
+                                          .arg(request.referenceRun));
+                    const QImage reference(referencePath);
+                    const EngineeringFidelityMetrics fidelity =
+                        compareEngineeringModals(metrics.modalImage, reference);
+                    if (!fidelity.valid) {
+                        success = false;
+                        restoreOriginal = true;
+                        result.insert(
+                            QStringLiteral("error"),
+                            QStringLiteral("Reference modal for run %1 is "
+                                           "missing or has incompatible "
+                                           "dimensions.")
+                                .arg(request.referenceRun));
+                    } else {
+                        result.insert(QStringLiteral("reference_run"),
+                                      request.referenceRun);
+                        result.insert(QStringLiteral("fidelity"),
+                                      fidelityJson(fidelity));
+                    }
+                }
                 result.insert(QStringLiteral("metrics"), metricsJson(metrics));
                 result.insert(QStringLiteral("modal_png"), modalFilename);
+                metrics.modalImage = QImage();
             }
         }
         result.insert(QStringLiteral("ok"), success);
@@ -2140,6 +2188,21 @@ class CaptureWindow final : public QMainWindow {
                       metrics.evenInstabilityPpm);
         result.insert(QStringLiteral("odd_instability_ppm"),
                       metrics.oddInstabilityPpm);
+        result.insert(QStringLiteral("robust_unstable_pixels"),
+                      static_cast<qint64>(metrics.robustUnstablePixels));
+        result.insert(QStringLiteral("robust_instability_ppm"),
+                      metrics.robustInstabilityPpm);
+        result.insert(QStringLiteral("robust_even_instability_ppm"),
+                      metrics.robustEvenInstabilityPpm);
+        result.insert(QStringLiteral("robust_odd_instability_ppm"),
+                      metrics.robustOddInstabilityPpm);
+        result.insert(QStringLiteral("median_frame_mismatches"),
+                      static_cast<qint64>(metrics.medianFrameMismatches));
+        result.insert(QStringLiteral("robust_frame_threshold"),
+                      static_cast<qint64>(metrics.robustFrameThreshold));
+        result.insert(QStringLiteral("robust_frames"), metrics.robustFrames);
+        result.insert(QStringLiteral("coherent_outlier_frames"),
+                      metrics.coherentOutlierFrames);
         result.insert(QStringLiteral("isolated_pixels"),
                       static_cast<qint64>(metrics.isolatedPixels));
         result.insert(QStringLiteral("third_color_pixels"),
@@ -2150,6 +2213,23 @@ class CaptureWindow final : public QMainWindow {
         result.insert(QStringLiteral("score"), metrics.score);
         result.insert(QStringLiteral("even_score"), metrics.evenScore);
         result.insert(QStringLiteral("odd_score"), metrics.oddScore);
+        return result;
+    }
+
+    static QJsonObject
+    fidelityJson(const EngineeringFidelityMetrics &fidelity) {
+        QJsonObject result;
+        result.insert(QStringLiteral("pixels"),
+                      static_cast<qint64>(fidelity.pixels));
+        result.insert(QStringLiteral("mismatched_pixels"),
+                      static_cast<qint64>(fidelity.mismatchedPixels));
+        result.insert(QStringLiteral("erased_pixels"),
+                      static_cast<qint64>(fidelity.erasedPixels));
+        result.insert(QStringLiteral("filled_pixels"),
+                      static_cast<qint64>(fidelity.filledPixels));
+        result.insert(QStringLiteral("recolored_pixels"),
+                      static_cast<qint64>(fidelity.recoloredPixels));
+        result.insert(QStringLiteral("mismatch_ppm"), fidelity.mismatchPpm);
         return result;
     }
 
@@ -2587,6 +2667,8 @@ class CaptureWindow final : public QMainWindow {
         }
         const QString directory = diagnostic_directory_;
         const int records = diagnostic_records_written_;
+        const QString labRequestId = diagnostic_lab_request_id_;
+        diagnostic_lab_request_id_.clear();
         diagnostic_active_ = false;
         diagnostic_watchdog_.stop();
         closeDiagnosticFiles();
@@ -2596,6 +2678,61 @@ class CaptureWindow final : public QMainWindow {
         diagnostic_action_->setEnabled(connected_);
         if (connected_ && detail.isEmpty()) {
             restartScreenStream();
+        }
+        if (!labRequestId.isEmpty()) {
+            if (!detail.isEmpty() && connected_) {
+                disconnectAdapter();
+            }
+            const bool success = detail.isEmpty() && !cancelled;
+            QJsonObject result;
+            result.insert(QStringLiteral("protocol"), 1);
+            result.insert(QStringLiteral("id"), labRequestId);
+            result.insert(QStringLiteral("ok"), success);
+            result.insert(QStringLiteral("state"),
+                          success ? QStringLiteral("complete")
+                          : cancelled ? QStringLiteral("cancelled")
+                                      : QStringLiteral("failed"));
+            result.insert(QStringLiteral("completed_utc"),
+                          QDateTime::currentDateTimeUtc().toString(
+                              Qt::ISODate));
+            result.insert(QStringLiteral("diagnostic_directory"),
+                          QDir::toNativeSeparators(directory));
+            result.insert(QStringLiteral("diagnostic_relative_directory"),
+                          QStringLiteral("diagnostics/%1").arg(labRequestId));
+            result.insert(QStringLiteral("raw_bursts"), records);
+            result.insert(QStringLiteral("start_line"),
+                          diagnostic_options_.startLine);
+            result.insert(QStringLiteral("line_count"),
+                          diagnostic_options_.lineCount);
+            result.insert(QStringLiteral("requested_repetitions"),
+                          diagnostic_options_.repetitions);
+            if (!detail.isEmpty()) {
+                result.insert(QStringLiteral("error"), detail);
+            }
+            QSaveFile resultFile(
+                QDir(directory).filePath(QStringLiteral("result.json")));
+            if (resultFile.open(QIODevice::WriteOnly)) {
+                const QByteArray data = QJsonDocument(result).toJson();
+                if (resultFile.write(data) == data.size()) {
+                    resultFile.commit();
+                }
+            }
+            respondToLabRequest(
+                labRequestId, success,
+                success ? QStringLiteral("complete")
+                : cancelled ? QStringLiteral("cancelled")
+                            : QStringLiteral("failed"),
+                detail, result);
+            statusBar()->showMessage(
+                success
+                    ? QStringLiteral("Codex diagnostic %1 complete: %2 bursts")
+                          .arg(labRequestId)
+                          .arg(records)
+                    : QStringLiteral("Codex diagnostic %1 did not complete")
+                          .arg(labRequestId),
+                5000);
+            writeCodexLabStatus();
+            return;
         }
         if (!detail.isEmpty()) {
             if (connected_) {
@@ -2636,6 +2773,126 @@ class CaptureWindow final : public QMainWindow {
                 makePicoControlPacket(P2000T_CONTROL_CANCEL_DIAGNOSTICS))) {
             return;
         }
+    }
+
+    void startLabDiagnosticCapture(const CodexLabRequest &request) {
+        QDir root(lab_bridge_.rootDirectory());
+        const QString relativeDirectory =
+            QStringLiteral("diagnostics/%1").arg(request.id);
+        if (root.exists(relativeDirectory) ||
+            !root.mkpath(relativeDirectory)) {
+            respondToLabRequest(
+                request.id, false, QStringLiteral("rejected"),
+                QStringLiteral("The diagnostic directory already exists or "
+                               "could not be created."));
+            return;
+        }
+
+        diagnostic_directory_ = root.filePath(relativeDirectory);
+        diagnostic_records_.setFileName(
+            QDir(diagnostic_directory_)
+                .filePath(QStringLiteral("capture.p2td")));
+        diagnostic_manifest_.setFileName(
+            QDir(diagnostic_directory_)
+                .filePath(QStringLiteral("manifest.csv")));
+        if (!diagnostic_records_.open(QIODevice::WriteOnly) ||
+            !diagnostic_manifest_.open(QIODevice::WriteOnly |
+                                       QIODevice::Text)) {
+            closeDiagnosticFiles();
+            respondToLabRequest(
+                request.id, false, QStringLiteral("failed"),
+                QStringLiteral("Could not create the diagnostic files."));
+            return;
+        }
+        {
+            QTextStream manifest(&diagnostic_manifest_);
+            manifest << "record_sequence,type,file_offset,record_size,"
+                        "payload_size,session_id,sample_rate_hz,sample_count,"
+                        "start_line,line_count,repetition,repetitions,"
+                        "capture_sequence,capture_duration_us,"
+                        "expected_duration_us,flags,captured_utc\n";
+            manifest.flush();
+        }
+
+        const DiagnosticCaptureOptions options{
+            request.diagnosticStartLine, request.diagnosticLineCount,
+            request.diagnosticRepetitions};
+        QJsonObject session;
+        session.insert(QStringLiteral("format"),
+                       QStringLiteral("P2000T high-resolution diagnostics"));
+        session.insert(QStringLiteral("protocol_version"),
+                       P2000T_DIAGNOSTIC_PROTOCOL_VERSION);
+        session.insert(QStringLiteral("viewer_version"),
+                       QStringLiteral(P2000T_VIEWER_VERSION));
+        session.insert(QStringLiteral("lab_request_id"), request.id);
+        session.insert(QStringLiteral("tag"), request.tag);
+        session.insert(QStringLiteral("started_utc"),
+                       QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+        session.insert(QStringLiteral("serial_port"), serial_.name());
+        session.insert(QStringLiteral("requested_start_line"),
+                       options.startLine);
+        session.insert(QStringLiteral("requested_line_count"),
+                       options.lineCount);
+        session.insert(QStringLiteral("requested_repetitions"),
+                       options.repetitions);
+        session.insert(QStringLiteral("first_visible_line"),
+                       configuration_.vertical);
+        session.insert(QStringLiteral("sample_phase"), configuration_.phase);
+        session.insert(QStringLiteral("odd_line_phase"),
+                       configuration_.oddLinePhase);
+        session.insert(QStringLiteral("sample_rate_trim"),
+                       configuration_.sampleRateTrim);
+        session.insert(QStringLiteral("horizontal_offset"),
+                       configuration_.horizontal);
+        QFile sessionFile(QDir(diagnostic_directory_)
+                              .filePath(QStringLiteral("session.json")));
+        if (!sessionFile.open(QIODevice::WriteOnly) ||
+            sessionFile.write(
+                QJsonDocument(session).toJson(QJsonDocument::Indented)) < 0) {
+            closeDiagnosticFiles();
+            respondToLabRequest(
+                request.id, false, QStringLiteral("failed"),
+                QStringLiteral("Could not write diagnostic session.json."));
+            return;
+        }
+        sessionFile.close();
+
+        diagnostic_options_ = options;
+        diagnostic_records_written_ = 0;
+        diagnostic_session_id_ = 0u;
+        diagnostic_last_record_sequence_ = 0u;
+        diagnostic_timing_received_ = false;
+        diagnostic_waiting_for_guard_ = false;
+        diagnostic_guard_action_ = 0;
+        diagnostic_record_retries_ = 0;
+        diagnostic_guard_sequence_ = 0u;
+        diagnostic_cancel_requested_ = false;
+        diagnostic_lab_request_id_ = request.id;
+        diagnostic_active_ = true;
+        configuration_action_->setEnabled(false);
+        calibration_sweep_action_->setEnabled(false);
+        engineering_autotune_action_->setEnabled(false);
+        diagnostic_action_->setEnabled(false);
+        receive_buffer_.clear();
+        const quint32 packedValue =
+            (static_cast<quint32>(options.repetitions) << 16u) |
+            static_cast<quint32>(options.startLine);
+        QByteArray command(1, 'q');
+        command += makePicoControlPacket(
+            P2000T_CONTROL_START_DIAGNOSTICS,
+            static_cast<quint8>(options.lineCount), packedValue);
+        if (!serial_.write(command)) {
+            finishDiagnosticCapture(
+                false, QStringLiteral("The Pico connection was lost while "
+                                      "starting diagnostics."));
+            return;
+        }
+        diagnostic_watchdog_.start();
+        statusBar()->showMessage(
+            QStringLiteral("Codex diagnostic %1 recording %2 bursts")
+                .arg(request.id)
+                .arg(options.repetitions));
+        writeCodexLabStatus();
     }
 
     void startDiagnosticCapture() {
@@ -2763,6 +3020,10 @@ class CaptureWindow final : public QMainWindow {
         diagnostic_session_id_ = 0u;
         diagnostic_last_record_sequence_ = 0u;
         diagnostic_timing_received_ = false;
+        diagnostic_waiting_for_guard_ = false;
+        diagnostic_guard_action_ = 0;
+        diagnostic_record_retries_ = 0;
+        diagnostic_guard_sequence_ = 0u;
         diagnostic_cancel_requested_ = false;
         diagnostic_active_ = true;
         configuration_action_->setEnabled(false);
@@ -2821,7 +3082,35 @@ class CaptureWindow final : public QMainWindow {
 
     void parseDiagnosticRecords() {
         const QByteArray magic(P2000T_DIAGNOSTIC_MAGIC, 4);
+        const QByteArray guardMagic(P2000T_DIAGNOSTIC_GUARD_MAGIC,
+                                    P2000T_DIAGNOSTIC_GUARD_MAGIC_SIZE);
         while (diagnostic_active_) {
+            if (diagnostic_waiting_for_guard_) {
+                const qsizetype guardOffset =
+                    receive_buffer_.indexOf(guardMagic);
+                if (guardOffset < 0) {
+                    if (receive_buffer_.size() >= guardMagic.size()) {
+                        receive_buffer_.remove(
+                            0, receive_buffer_.size() - guardMagic.size() + 1);
+                    }
+                    return;
+                }
+                receive_buffer_.remove(0, guardOffset + guardMagic.size());
+                diagnostic_waiting_for_guard_ = false;
+                if (diagnostic_guard_action_ != 0) {
+                    const quint8 opcode =
+                        diagnostic_guard_action_ == 2
+                            ? P2000T_CONTROL_RETRY_DIAGNOSTIC_RECORD
+                            : P2000T_CONTROL_ACK_DIAGNOSTIC_RECORD;
+                    const quint32 sequence = diagnostic_guard_sequence_;
+                    diagnostic_guard_action_ = 0;
+                    diagnostic_guard_sequence_ = 0u;
+                    if (!sendControl(makePicoControlPacket(opcode, 0u,
+                                                           sequence))) {
+                        return;
+                    }
+                }
+            }
             const qsizetype magicOffset = receive_buffer_.indexOf(magic);
             if (magicOffset < 0) {
                 if (receive_buffer_.size() > 3) {
@@ -2937,12 +3226,34 @@ class CaptureWindow final : public QMainWindow {
             }
             const QByteArray payload = receive_buffer_.mid(
                 headerSize, static_cast<qsizetype>(payloadSize));
-            if (crc32(payload) != expectedCrc) {
-                finishDiagnosticCapture(
-                    false, QStringLiteral("CRC-32 validation failed for "
-                                          "diagnostic record %1.")
-                               .arg(recordSequence));
-                return;
+            const quint32 actualCrc = crc32(payload);
+            if (actualCrc != expectedCrc) {
+                QFile rejected(QDir(diagnostic_directory_)
+                                   .filePath(QStringLiteral(
+                                       "rejected-record.bin")));
+                if (rejected.open(QIODevice::WriteOnly)) {
+                    rejected.write(receive_buffer_.constData(), recordSize);
+                    rejected.close();
+                }
+                if (++diagnostic_record_retries_ > 3) {
+                    finishDiagnosticCapture(
+                        false, QStringLiteral(
+                                   "CRC-32 validation failed four times for "
+                                   "diagnostic record %1 (expected %2, "
+                                   "received %3).")
+                                   .arg(recordSequence)
+                                   .arg(expectedCrc, 8, 16,
+                                        QLatin1Char('0'))
+                                   .arg(actualCrc, 8, 16,
+                                        QLatin1Char('0')));
+                    return;
+                }
+                receive_buffer_.remove(0, recordSize);
+                diagnostic_waiting_for_guard_ = true;
+                diagnostic_guard_action_ = 2;
+                diagnostic_guard_sequence_ = recordSequence;
+                diagnostic_watchdog_.start();
+                continue;
             }
             const qint64 fileOffset = diagnostic_records_.pos();
             const QByteArray record = receive_buffer_.left(recordSize);
@@ -2981,6 +3292,14 @@ class CaptureWindow final : public QMainWindow {
                 return;
             }
             diagnostic_last_record_sequence_ = recordSequence;
+            diagnostic_record_retries_ = 0;
+            diagnostic_waiting_for_guard_ =
+                type != P2000T_DIAGNOSTIC_RECORD_COMPLETE;
+            if (type == P2000T_DIAGNOSTIC_RECORD_TIMING ||
+                type == P2000T_DIAGNOSTIC_RECORD_RAW_RGBS) {
+                diagnostic_guard_action_ = 1;
+                diagnostic_guard_sequence_ = recordSequence;
+            }
             diagnostic_watchdog_.start();
             if (diagnostic_session_id_ == 0u) {
                 diagnostic_session_id_ = sessionId;
@@ -3339,6 +3658,10 @@ class CaptureWindow final : public QMainWindow {
     quint32 diagnostic_session_id_ = 0;
     quint32 diagnostic_last_record_sequence_ = 0;
     bool diagnostic_timing_received_ = false;
+    bool diagnostic_waiting_for_guard_ = false;
+    int diagnostic_guard_action_ = 0;
+    int diagnostic_record_retries_ = 0;
+    quint32 diagnostic_guard_sequence_ = 0;
     DiagnosticCaptureOptions diagnostic_options_;
     EngineeringAutotuneOptions autotune_options_;
     CodexLabBridge lab_bridge_;
@@ -3353,6 +3676,7 @@ class CaptureWindow final : public QMainWindow {
     QString lab_run_directory_;
     QString lab_bridge_error_;
     QString lab_save_request_id_;
+    QString diagnostic_lab_request_id_;
     QProgressDialog *diagnostic_progress_ = nullptr;
     quint64 frame_count_ = 0;
     quint64 byte_count_ = 0;

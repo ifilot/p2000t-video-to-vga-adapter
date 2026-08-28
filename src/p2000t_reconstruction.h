@@ -34,6 +34,7 @@ typedef struct {
 enum {
     P2000T_WINDOW_ENTRY_OUTPUT_MASK = 0x0000000fu,
     P2000T_WINDOW_ENTRY_DIAGNOSTICS_SHIFT = 8,
+    P2000T_WINDOW_DIAGNOSTIC_UNCERTAIN_SHIFT = 20,
 };
 
 /**
@@ -92,11 +93,13 @@ p2000t_window_lookup_entry(uint8_t first, uint8_t center, uint8_t last,
         p2000t_window_reconstruct(first, center, last, policy);
     const uint8_t changed = (uint8_t)(output ^ (center & 0x0fu));
     const bool ambiguous = first != center && first != last && center != last;
-    const uint32_t contribution = (changed != 0u ? 1u : 0u) |
-                                  (ambiguous ? 1u << 4u : 0u) |
-                                  (((changed >> red_channel) & 1u) << 8u) |
-                                  (((changed >> green_channel) & 1u) << 12u) |
-                                  (((changed >> blue_channel) & 1u) << 16u);
+    const bool uncertain = first != center || center != last;
+    const uint32_t contribution =
+        (changed != 0u ? 1u : 0u) | (ambiguous ? 1u << 4u : 0u) |
+        (((changed >> red_channel) & 1u) << 8u) |
+        (((changed >> green_channel) & 1u) << 12u) |
+        (((changed >> blue_channel) & 1u) << 16u) |
+        (uncertain ? 1u << P2000T_WINDOW_DIAGNOSTIC_UNCERTAIN_SHIFT : 0u);
     return output | (contribution << P2000T_WINDOW_ENTRY_DIAGNOSTICS_SHIFT);
 }
 
@@ -107,10 +110,10 @@ p2000t_window_lookup_entry(uint8_t first, uint8_t center, uint8_t last,
  * words therefore contain exactly eight three-sample windows, avoiding all
  * division and cross-word branches in the line-rate interrupt handler.
  */
-static inline uint32_t p2000t_reconstruct_window_group(
+static inline uint32_t p2000t_reconstruct_window_group_with_evidence(
     uint32_t first_word, uint32_t second_word, uint32_t third_word,
     const uint32_t lookup[4096],
-    p2000t_reconstruction_diagnostics_t *diagnostics) {
+    p2000t_reconstruction_diagnostics_t *diagnostics, uint8_t *uncertain_mask) {
     const uint16_t triplets[8] = {
         (uint16_t)(first_word >> 20u),
         (uint16_t)((first_word >> 8u) & 0x0fffu),
@@ -123,22 +126,76 @@ static inline uint32_t p2000t_reconstruct_window_group(
     };
     uint32_t output = 0u;
     uint32_t packed_diagnostics = 0u;
+    uint8_t uncertainty = 0u;
     for (unsigned index = 0; index < 8u; ++index) {
         const uint32_t entry = lookup[triplets[index]];
         output = (output << 4u) | (entry & P2000T_WINDOW_ENTRY_OUTPUT_MASK);
         packed_diagnostics += entry >> P2000T_WINDOW_ENTRY_DIAGNOSTICS_SHIFT;
+        uncertainty =
+            (uint8_t)((uncertainty << 1u) |
+                      ((entry >> (P2000T_WINDOW_ENTRY_DIAGNOSTICS_SHIFT +
+                                  P2000T_WINDOW_DIAGNOSTIC_UNCERTAIN_SHIFT)) &
+                       1u));
     }
     diagnostics->corrected_samples += packed_diagnostics & 0x0fu;
     diagnostics->ambiguous_samples += (packed_diagnostics >> 4u) & 0x0fu;
     diagnostics->red_corrections += (packed_diagnostics >> 8u) & 0x0fu;
     diagnostics->green_corrections += (packed_diagnostics >> 12u) & 0x0fu;
     diagnostics->blue_corrections += (packed_diagnostics >> 16u) & 0x0fu;
+    if (uncertain_mask != NULL) {
+        *uncertain_mask = uncertainty;
+    }
     return output;
+}
+
+/** Reconstruct a group when per-output confidence is not required. */
+static inline uint32_t p2000t_reconstruct_window_group(
+    uint32_t first_word, uint32_t second_word, uint32_t third_word,
+    const uint32_t lookup[4096],
+    p2000t_reconstruction_diagnostics_t *diagnostics) {
+    return p2000t_reconstruct_window_group_with_evidence(
+        first_word, second_word, third_word, lookup, diagnostics, NULL);
 }
 
 /** Return one chronological four-bit sample from a packed capture word. */
 static inline uint8_t p2000t_packed_sample(uint32_t word, unsigned sample) {
     return (uint8_t)(word >> (28u - sample * 4u)) & 0x0fu;
+}
+
+/**
+ * @brief Correct one uncertain half-dot only from a stable paired half-dot.
+ *
+ * The two uncertainty bits correspond to the high and low nibbles. Equal
+ * colors, two unanimous colors, and two uncertain colors are all preserved.
+ * This means the guard cannot move an ordinary edge or impose a global
+ * early/late bias.
+ */
+static inline uint8_t p2000t_guard_uncertain_pair(uint8_t pair,
+                                                  uint8_t uncertainty) {
+    const uint8_t first = (uint8_t)(pair >> 4u);
+    const uint8_t second = pair & 0x0fu;
+    uncertainty &= 0x03u;
+    if (first == second || uncertainty == 0u || uncertainty == 3u) {
+        return pair;
+    }
+    if (uncertainty == 2u) {
+        return (uint8_t)((second << 4u) | second);
+    }
+    return (uint8_t)((first << 4u) | first);
+}
+
+/** Apply the conservative confidence guard to four adjacent source dots. */
+static inline uint32_t p2000t_guard_uncertain_pairs(uint32_t reconstructed,
+                                                    uint8_t uncertainty) {
+    uint32_t output = 0u;
+    for (unsigned pair = 0; pair < 4u; ++pair) {
+        const unsigned shift = 24u - pair * 8u;
+        const uint8_t samples = (uint8_t)(reconstructed >> shift);
+        const uint8_t evidence = (uint8_t)(uncertainty >> (6u - pair * 2u));
+        output |= (uint32_t)p2000t_guard_uncertain_pair(samples, evidence)
+                  << shift;
+    }
+    return output;
 }
 
 /**

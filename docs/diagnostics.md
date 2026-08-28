@@ -15,11 +15,11 @@ Each session contains:
 - `manifest.csv`: byte offsets and metadata for every validated record.
 
 The first payload is a roughly 22 ms, 63 MHz one-bit CSYNC trace. It is followed
-by repeated RGBS bursts sampled at 126 MHz. Each nominal scanline contributes
-8064 four-bit observations, so a sixteen-line burst contains 129024 samples and
-64512 payload bytes. RGB and CSYNC are conditioned, active-low/active-high input
-values exactly as seen at the GPIO pins; no reconstruction or palette mapping
-is applied.
+by repeated RGBS bursts sampled at the full 252 MHz system clock. Each nominal
+scanline contributes 16128 four-bit observations, so a sixteen-line burst
+contains 258048 samples and 129024 payload bytes. RGB and CSYNC are conditioned,
+active-low/active-high input values exactly as seen at the GPIO pins; no
+reconstruction or palette mapping is applied.
 
 The firmware timestamps the sampler trigger and DMA completion independently.
 Both measured and expected capture durations are stored in every data header;
@@ -36,7 +36,13 @@ any record carrying either timing-integrity flag as suspect during analysis.
 ## Binary format
 
 Every record starts with a 72-byte little-endian header and the magic `P2DG`.
-Payload words are little-endian `uint32_t` values. Samples within each word are
+The wire stream follows each record with a duplicate of its final 64 payload
+bytes and an eight-byte guard marker. The viewer validates the complete record
+through this marker, acknowledges valid data, and requests retransmission after
+a CRC failure. It discards the duplicate and marker, so guards are never stored
+in `capture.p2td`; a rejected attempt is retained separately for investigation.
+Payload words are
+little-endian `uint32_t` values. Samples within each word are
 chronological from its most significant bits: 32 one-bit CSYNC observations or
 eight four-bit RGBS nibbles. The payload has a standard reflected CRC-32.
 Header offsets and record identifiers are defined in

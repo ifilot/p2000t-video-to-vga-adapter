@@ -64,8 +64,9 @@ development machine its default root is
 `tools/p2000t_lab.py` can query status, shut down the agent, or submit one
 acknowledged experiment at
 a time, including optional phase, rate, odd-line phase, reconstruction,
-settling-frame, and capture-frame controls. Successful experiments leave their
-live setting active so Codex can adapt from it; cancellation and errors restore
+reference-modal, settling-frame, and capture-frame controls. Successful
+experiments leave their live setting active so Codex can adapt from it;
+cancellation and errors restore
 the pre-experiment timing. Only the separate, explicit `save` command writes
 the current live tuple to Pico flash and waits for a matching stored-state
 acknowledgement. Each run saves the request, exact frames and sequences, modal
@@ -79,7 +80,7 @@ compiled into the Pico 2 firmware only.
 ## High-resolution diagnostics
 
 **Adapter > Record high-resolution diagnostics** records a lossless CSYNC
-timing trace followed by repeated 126 MHz raw RGBS bursts covering up to sixteen
+timing trace followed by repeated 252 MHz raw RGBS bursts covering up to sixteen
 contiguous physical source lines. The viewer validates each CRC-protected record
 before appending it to `capture.p2td` and writes a CSV byte index alongside it.
 See [the diagnostic format and analysis guide](../docs/diagnostics.md).
@@ -131,7 +132,7 @@ preparing a self-contained deployment directory:
 
 ```powershell
 gui/packaging/create_windows_installer.ps1 `
-  -Stage dist/viewer -Version 0.4.0 `
+  -Stage dist/viewer -Version 0.4.1 `
   -Output dist/p2000t-vid2vga-capture-windows-setup.exe `
   -WorkDirectory installer-work
 ```

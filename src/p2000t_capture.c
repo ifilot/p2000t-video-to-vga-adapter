@@ -163,6 +163,7 @@ static uint32_t windowed_frames;
 
 /** Total late or coalesced scanline completion observations. */
 static uint32_t line_deadline_misses;
+
 #endif
 
 /** PIO command stream rebuilt between complete frame transfers. */
@@ -485,7 +486,36 @@ static void __not_in_flash_func(finish_capture_frame)(
 #if defined(PICO_RP2350) && PICO_RP2350
 /** Decode one 720-byte six-tap line into the normal packed frame geometry. */
 static void __not_in_flash_func(reconstruct_window_line)(
-    const uint32_t source[WINDOW_WORDS_PER_LINE], uint32_t *destination) {
+    const uint32_t source[WINDOW_WORDS_PER_LINE], uint32_t *destination,
+    bool apply_confidence_guard) {
+    if (active_reconstruction_mode ==
+        P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_CONFIDENCE_GUARD) {
+        const uint32_t *lookup =
+            window_lookup_tables[P2000T_WINDOW_POLICY_COLOR_LATE];
+        if (!apply_confidence_guard) {
+            for (unsigned group = 0; group < P2000T_CAPTURE_WORDS_PER_LINE;
+                 ++group) {
+                destination[group] = p2000t_reconstruct_window_group(
+                    source[group * 3u], source[group * 3u + 1u],
+                    source[group * 3u + 2u], lookup,
+                    &current_window_diagnostics);
+            }
+            return;
+        }
+        for (unsigned group = 0; group < P2000T_CAPTURE_WORDS_PER_LINE;
+             ++group) {
+            uint8_t uncertainty = 0u;
+            uint32_t reconstructed =
+                p2000t_reconstruct_window_group_with_evidence(
+                    source[group * 3u], source[group * 3u + 1u],
+                    source[group * 3u + 2u], lookup,
+                    &current_window_diagnostics, &uncertainty);
+            reconstructed =
+                p2000t_guard_uncertain_pairs(reconstructed, uncertainty);
+            destination[group] = reconstructed;
+        }
+        return;
+    }
     const p2000t_window_policy_t policy =
         (p2000t_window_policy_t)(active_reconstruction_mode -
                                  P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_FIRST);
@@ -524,11 +554,12 @@ static void __not_in_flash_func(service_window_dma_irq)(uint32_t pending) {
             ++line_deadline_misses;
         }
         const unsigned buffer = completed_channel == capture_rx_dma ? 0u : 1u;
+        const unsigned line_offset =
+            window_completed_lines * P2000T_CAPTURE_WORDS_PER_LINE;
         reconstruct_window_line(
             window_line_buffers[buffer],
-            &capture_buffers[capture_fill_index]
-                            [window_completed_lines *
-                             P2000T_CAPTURE_WORDS_PER_LINE]);
+            &capture_buffers[capture_fill_index][line_offset],
+            (window_completed_lines & 1u) != 0u);
         ++window_completed_lines;
         remaining &= ~(1u << completed_channel);
 
@@ -669,7 +700,9 @@ static void initialize_capture_dma_resources(void) {
     dma_channel_set_irq1_enabled(capture_window_rx_dma, false);
 #endif
     irq_set_exclusive_handler(DMA_IRQ_1, capture_dma_irq);
-    irq_set_priority(DMA_IRQ_1, 0x80);
+    /* Window reconstruction must finish before the next 64 us scanline DMA.
+       It runs on core 0 while VGA scanout remains isolated on core 1. */
+    irq_set_priority(DMA_IRQ_1, 0x40);
     irq_set_enabled(DMA_IRQ_1, true);
 }
 

@@ -14,7 +14,7 @@ from array import array
 from pathlib import Path
 
 MAGIC = b"P2DG"
-VERSION = 1
+VERSIONS = (1, 2)
 HEADER_SIZE = 72
 SESSION, TIMING, RAW_RGBS, COMPLETE = range(1, 5)
 TYPE_NAMES = {
@@ -24,8 +24,8 @@ TYPE_NAMES = {
     COMPLETE: "complete",
 }
 TIMING_RATE = 63_000_000
-RAW_RATE = 126_000_000
-SAMPLES_PER_LINE = 8064
+RAW_RATE = 252_000_000
+SAMPLES_PER_LINE = 16128
 TIMING_WORDS = 43320
 TIMING_SAMPLES = TIMING_WORDS * 32
 TIMING_BYTES = TIMING_WORDS * 4
@@ -55,7 +55,7 @@ def read_records(path):
                 break
             if len(header) != HEADER_SIZE:
                 raise ValueError(f"truncated header at byte {offset}")
-            if header[:4] != MAGIC or header[4] != VERSION:
+            if header[:4] != MAGIC or header[4] not in VERSIONS:
                 raise ValueError(f"invalid record magic/version at byte {offset}")
             if u16(header, 6) != HEADER_SIZE:
                 raise ValueError(f"invalid header size at byte {offset}")
@@ -81,6 +81,7 @@ def read_records(path):
             elif current_session != session_id:
                 raise ValueError(f"session id changed in record {sequence}")
             record = {
+                "version": header[4],
                 "offset": offset,
                 "type": record_type,
                 "sequence": sequence,
@@ -111,7 +112,8 @@ def read_records(path):
                 valid = payload_size == 0 and record["sample_count"] == 0
             elif record_type == TIMING:
                 valid = (
-                    payload_size == TIMING_BYTES
+                    payload_size
+                    == TIMING_BYTES
                     and record["sample_rate_hz"] == TIMING_RATE
                     and record["sample_count"] == TIMING_SAMPLES
                     and record["bits_per_sample"] == 1
@@ -119,10 +121,12 @@ def read_records(path):
             else:
                 valid = (
                     1 <= record["line_count"] <= 16
-                    and record["sample_rate_hz"] == RAW_RATE
+                    and record["sample_rate_hz"] in (126_000_000, RAW_RATE)
+                    and record["samples_per_line"] in (8064, SAMPLES_PER_LINE)
                     and record["sample_count"]
-                    == record["line_count"] * SAMPLES_PER_LINE
-                    and payload_size == record["sample_count"] // 2
+                    == record["line_count"] * record["samples_per_line"]
+                    and payload_size
+                    == record["sample_count"] // 2
                     and record["bits_per_sample"] == 4
                     and 1 <= record["repetition"] <= record["repetitions"]
                 )
@@ -149,7 +153,9 @@ def read_records(path):
     return records
 
 
-def unpack_msb_samples(payload, bits_per_sample):
+def unpack_msb_samples(payload, bits_per_sample, sample_count=None):
+    if sample_count is not None:
+        payload = payload[: sample_count * bits_per_sample // 8]
     per_word = 32 // bits_per_sample
     mask = (1 << bits_per_sample) - 1
     for (word,) in struct.iter_unpack("<I", payload):
@@ -158,7 +164,7 @@ def unpack_msb_samples(payload, bits_per_sample):
 
 
 def timing_edges(record):
-    bits = unpack_msb_samples(record["payload"], 1)
+    bits = unpack_msb_samples(record["payload"], 1, record["sample_count"])
     previous = next(bits, None)
     rising = []
     falling = []
@@ -244,7 +250,8 @@ def write_raw_summaries(records, output):
             previous_sync = None
             rising = []
             for index, nibble in enumerate(
-                unpack_msb_samples(record["payload"], 4)
+                unpack_msb_samples(record["payload"], 4,
+                                   record["sample_count"])
             ):
                 counts[nibble][index] += 1
                 sync = (nibble >> record["sync_channel"]) & 1

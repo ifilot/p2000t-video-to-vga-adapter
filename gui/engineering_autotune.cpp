@@ -48,8 +48,8 @@ bool EngineeringCandidateAccumulator::addFrame(const QImage &frame) {
     logical_height_ = logicalHeight;
     QByteArray indexed(width_ * logical_height_, Qt::Uninitialized);
     for (int y = 0; y < logical_height_; ++y) {
-        const auto *pixels = reinterpret_cast<const QRgb *>(frame.constScanLine(
-            y * 2));
+        const auto *pixels =
+            reinterpret_cast<const QRgb *>(frame.constScanLine(y * 2));
         auto *destination = reinterpret_cast<quint8 *>(indexed.data()) +
                             static_cast<qsizetype>(y) * width_;
         for (int x = 0; x < width_; ++x) {
@@ -77,8 +77,8 @@ EngineeringCandidateMetrics EngineeringCandidateAccumulator::finalize() const {
         return result;
     }
 
-    const qsizetype pixelCount = static_cast<qsizetype>(width_) *
-                                 logical_height_;
+    const qsizetype pixelCount =
+        static_cast<qsizetype>(width_) * logical_height_;
     QByteArray modal(pixelCount, Qt::Uninitialized);
     for (qsizetype pixel = 0; pixel < pixelCount; ++pixel) {
         std::array<int, kUnknownColor + 1> counts = {};
@@ -118,8 +118,7 @@ EngineeringCandidateMetrics EngineeringCandidateAccumulator::finalize() const {
             const quint8 after = row[x + 1];
             if (before == after && current != before) {
                 ++result.isolatedPixels;
-                odd ? ++result.isolatedOddLines
-                    : ++result.isolatedEvenLines;
+                odd ? ++result.isolatedOddLines : ++result.isolatedEvenLines;
             } else if (before != after && current != before &&
                        current != after) {
                 ++result.thirdColorPixels;
@@ -129,8 +128,45 @@ EngineeringCandidateMetrics EngineeringCandidateAccumulator::finalize() const {
         }
     }
 
-    const quint64 observations = static_cast<quint64>(pixelCount) *
-                                 frames_.size();
+    struct FrameMismatchCounts {
+        quint64 total = 0;
+        quint64 even = 0;
+        quint64 odd = 0;
+    };
+    std::vector<FrameMismatchCounts> frameMismatches;
+    frameMismatches.reserve(frames_.size());
+    std::vector<quint64> totals;
+    totals.reserve(frames_.size());
+    for (const QByteArray &frame : frames_) {
+        FrameMismatchCounts counts;
+        for (qsizetype pixel = 0; pixel < pixelCount; ++pixel) {
+            if (frame[pixel] == modal[pixel]) {
+                continue;
+            }
+            ++counts.total;
+            const int y = static_cast<int>(pixel / width_);
+            (y & 1) != 0 ? ++counts.odd : ++counts.even;
+        }
+        frameMismatches.push_back(counts);
+        totals.push_back(counts.total);
+    }
+    std::sort(totals.begin(), totals.end());
+    result.medianFrameMismatches = totals[totals.size() / 2u];
+    result.robustFrameThreshold =
+        std::max<quint64>(32u, result.medianFrameMismatches * 4u);
+    for (const FrameMismatchCounts &counts : frameMismatches) {
+        if (counts.total > result.robustFrameThreshold) {
+            ++result.coherentOutlierFrames;
+            continue;
+        }
+        ++result.robustFrames;
+        result.robustUnstablePixels += counts.total;
+        result.robustUnstableEvenLines += counts.even;
+        result.robustUnstableOddLines += counts.odd;
+    }
+
+    const quint64 observations =
+        static_cast<quint64>(pixelCount) * frames_.size();
     const quint64 evenObservations = evenPixels * frames_.size();
     const quint64 oddObservations = oddPixels * frames_.size();
     result.instabilityPpm =
@@ -139,6 +175,13 @@ EngineeringCandidateMetrics EngineeringCandidateAccumulator::finalize() const {
         partsPerMillion(result.unstableEvenLines, evenObservations);
     result.oddInstabilityPpm =
         partsPerMillion(result.unstableOddLines, oddObservations);
+    result.robustInstabilityPpm =
+        partsPerMillion(result.robustUnstablePixels,
+                        static_cast<quint64>(pixelCount) * result.robustFrames);
+    result.robustEvenInstabilityPpm = partsPerMillion(
+        result.robustUnstableEvenLines, evenPixels * result.robustFrames);
+    result.robustOddInstabilityPpm = partsPerMillion(
+        result.robustUnstableOddLines, oddPixels * result.robustFrames);
     result.artifactPpm = partsPerMillion(
         result.isolatedPixels + result.thirdColorPixels, pixelCount);
     const double evenArtifactPpm = partsPerMillion(
@@ -154,9 +197,10 @@ EngineeringCandidateMetrics EngineeringCandidateAccumulator::finalize() const {
     result.modalImage =
         QImage(width_, logical_height_ * 2, QImage::Format_RGB32);
     for (int y = 0; y < logical_height_; ++y) {
-        auto *first = reinterpret_cast<QRgb *>(result.modalImage.scanLine(y * 2));
-        auto *second = reinterpret_cast<QRgb *>(
-            result.modalImage.scanLine(y * 2 + 1));
+        auto *first =
+            reinterpret_cast<QRgb *>(result.modalImage.scanLine(y * 2));
+        auto *second =
+            reinterpret_cast<QRgb *>(result.modalImage.scanLine(y * 2 + 1));
         const auto *source =
             reinterpret_cast<const quint8 *>(modal.constData()) +
             static_cast<qsizetype>(y) * width_;
@@ -168,5 +212,43 @@ EngineeringCandidateMetrics EngineeringCandidateAccumulator::finalize() const {
             second[x] = first[x];
         }
     }
+    return result;
+}
+
+EngineeringFidelityMetrics compareEngineeringModals(const QImage &candidate,
+                                                    const QImage &reference) {
+    EngineeringFidelityMetrics result;
+    if (candidate.isNull() || reference.isNull() ||
+        candidate.size() != reference.size() || candidate.width() <= 0 ||
+        candidate.height() <= 0 || (candidate.height() & 1) != 0) {
+        return result;
+    }
+    result.valid = true;
+    result.pixels = static_cast<quint64>(candidate.width()) *
+                    static_cast<quint64>(candidate.height() / 2);
+    constexpr QRgb black = 0xff000000u;
+    for (int y = 0; y < candidate.height(); y += 2) {
+        const auto *candidateRow =
+            reinterpret_cast<const QRgb *>(candidate.constScanLine(y));
+        const auto *referenceRow =
+            reinterpret_cast<const QRgb *>(reference.constScanLine(y));
+        for (int x = 0; x < candidate.width(); ++x) {
+            const QRgb current = candidateRow[x] | 0xff000000u;
+            const QRgb expected = referenceRow[x] | 0xff000000u;
+            if (current == expected) {
+                continue;
+            }
+            ++result.mismatchedPixels;
+            if (current == black) {
+                ++result.erasedPixels;
+            } else if (expected == black) {
+                ++result.filledPixels;
+            } else {
+                ++result.recoloredPixels;
+            }
+        }
+    }
+    result.mismatchPpm =
+        partsPerMillion(result.mismatchedPixels, result.pixels);
     return result;
 }

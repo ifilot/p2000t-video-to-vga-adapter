@@ -91,12 +91,28 @@ def build_parser() -> argparse.ArgumentParser:
             "window-channel",
             "window-early",
             "window-late",
+            "window-confidence",
         ),
+    )
+    experiment.add_argument(
+        "--reference-run",
+        help="existing run id whose modal image is the spatial-fidelity reference",
     )
     experiment.add_argument("--settle", type=int, default=2)
     experiment.add_argument("--frames", type=int, default=10)
     experiment.add_argument("--tag", default="")
     experiment.add_argument("--id", dest="explicit_id")
+
+    diagnostic = subparsers.add_parser(
+        "diagnostic", help="record lossless high-resolution RGBS diagnostics"
+    )
+    add_common(diagnostic)
+    diagnostic.set_defaults(timeout=180.0)
+    diagnostic.add_argument("--start-line", type=int, required=True)
+    diagnostic.add_argument("--lines", type=int, default=16)
+    diagnostic.add_argument("--repetitions", type=int, default=100)
+    diagnostic.add_argument("--tag", default="")
+    diagnostic.add_argument("--id", dest="explicit_id")
     return parser
 
 
@@ -125,6 +141,17 @@ def main() -> int:
                 "settings": settings,
                 "settle_frames": args.settle,
                 "capture_frames": args.frames,
+            }
+        )
+        if args.reference_run:
+            payload["reference_run"] = args.reference_run
+    elif args.command == "diagnostic":
+        payload.update(
+            {
+                "tag": args.tag,
+                "start_line": args.start_line,
+                "line_count": args.lines,
+                "repetitions": args.repetitions,
             }
         )
     try:

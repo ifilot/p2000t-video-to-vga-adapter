@@ -40,9 +40,11 @@ and acknowledges settings without saving images.
 
 Experiments operate only on live phase, physical odd-line phase, line-rate
 trim, and reconstruction. Available reconstruction names are `raw`, `guarded`,
-`sharp`, `window-center`, `window-channel`, `window-early`, and `window-late`.
-The four window modes require Pico 2 and acquire three consecutive 126 MHz
-samples around every retained output sample. Experiments never write flash.
+`sharp`, `window-center`, `window-channel`, `window-early`, `window-late`, and
+`window-confidence`. The latter adds the parity-aware unanimous-evidence
+guard. Window modes require Pico 2 and acquire three
+consecutive 126 MHz samples around every retained output sample. Experiments
+never write flash.
 Successful settings remain active for the next adaptive step; an error,
 cancellation, signal loss, or disconnection restores the settings which were
 active before that experiment. The separate, explicit `save` command persists
@@ -65,6 +67,7 @@ An experiment request has protocol version 1:
   "id": "edge-study-001",
   "command": "experiment",
   "tag": "white-to-blue transition",
+  "reference_run": "edge-study-baseline",
   "settings": {
     "phase": -2,
     "odd_line_phase": 1,
@@ -76,7 +79,8 @@ An experiment request has protocol version 1:
 }
 ```
 
-Valid commands are `status`, `experiment`, `save`, `cancel`, and `shutdown`.
+Valid commands are `status`, `experiment`, `diagnostic`, `save`, `cancel`, and
+`shutdown`.
 Ranges are validated before any firmware command is sent. Every setting tuple
 is followed by an explicit firmware state request; capture starts only after
 the Pico reports the complete requested tuple. Missing acknowledgements are
@@ -88,8 +92,16 @@ Each experiment creates `runs/<id>/` containing:
 - `frames.csv` and lossless, sequence-labeled PNGs;
 - `modal.png` for a capture with at least one frame;
 - `result.json` with temporal instability, physical row-parity diagnostics,
-  one-pixel island/third-color counts, horizontal transitions, score, and exact
-  firmware reconstruction telemetry.
+  robust low-change-frame metrics, coherent high-change-frame counts,
+  one-pixel island/third-color counts, horizontal transitions, score, exact
+  firmware reconstruction telemetry, and optional reference-modal fidelity.
+
+Passing `--reference-run <id>` compares the new modal with
+`runs/<id>/modal.png`. The result classifies every mismatch as an erased,
+filled, or recolored pixel. Robust temporal fields use frames at or below the
+larger of 32 changed pixels and four times the median frame mismatch count.
+Frames above that threshold remain logged as `coherent_outlier_frames` rather
+than silently disappearing from the ordinary instability total.
 
 Every `frames.csv` row records the active engine, samples per output pixel,
 corrected and ambiguous sample counts, corrections per RGB channel, and whether
@@ -100,8 +112,8 @@ capture failure.
 
 Bridge experiments remain non-persistent. Flash is changed only by an explicit
 `save` command or the ordinary configuration UI, both of which can save every
-reconstruction mode in v0.4.0. Pico 2 uses the balanced `window-center`, phase
--1, odd-line +1 configuration as its power-on and factory default when no valid
+reconstruction mode in v0.4.1. Pico 2 uses `window-confidence`, phase 0,
+odd-line +1, and rate trim 0 as its power-on and factory default when no valid
 saved record is present; the original Pico retains raw phase-zero defaults.
 
 The transport test can run without hardware: a `status` request still returns
