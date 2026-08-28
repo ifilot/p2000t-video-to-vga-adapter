@@ -18,7 +18,7 @@ Hardware and firmware for converting the Philips P2000T RGBS output to
 
 ## Features
 
-- 480×240 RGBS capture using PIO and DMA
+- 480×240 RGBs capture using PIO and DMA
 - Triple-buffered, frame-boundary VGA updates
 - Horizontally qualified CSYNC capture
 - 640×480 at 60 Hz RGB444 VGA output
@@ -26,7 +26,6 @@ Hardware and firmware for converting the Philips P2000T RGBS output to
 - On-board LED breathing while seeking and blinking during valid capture
 - USB serial controls and capture statistics
 - Pico 2 USB screen streaming at a target 25 FPS with a Qt 6 viewer
-- Pico and experimental Pico 2 builds
 
 ## Building
 
@@ -38,11 +37,6 @@ sudo apt update
 sudo apt install cmake ninja-build gcc-arm-none-eabi \
   libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib git python3
 ```
-
-CMake downloads the pinned Pico SDK 2.1.1, pico-extras 2.1.1, and required
-host utilities into the ignored `.ci-dependencies` directory on first use.
-Existing SDK checkouts can be selected instead by setting `PICO_SDK_PATH` and
-`PICO_EXTRAS_PATH`.
 
 Configure and build the Pico firmware:
 
@@ -70,9 +64,11 @@ On Pico 2, `c` starts the recommended continuous PackBits screen stream and
 `r` starts an uncompressed stream. Press `q` or Escape to stop binary mode and
 return to the console. The alignment and artwork commands remain available
 silently while a binary stream is active, allowing the desktop viewer to
-configure the adapter without interrupting capture. Screen streaming is
-intentionally excluded from the Pico/RP2040 build for now so its limited SRAM
-and established VGA timing remain unchanged.
+configure the adapter without interrupting capture. 
+
+> [!NOTE] 
+> Screen streaming is intentionally excluded from the Pico/RP2040 build
+> for now so its limited SRAM and established VGA timing remain unchanged.
 
 ## Pico 2 desktop capture viewer
 

@@ -15188,7 +15188,7 @@
 		(layer "Edge.Cuts")
 		(uuid "5cca0d87-6606-4a4f-9243-d43de12d2e43")
 	)
-	(gr_text "https://github.com/ifilot/p2000t-video-to-vga-adapter"
+	(gr_text "Licensed under CERN-OHL-S v2\nhttps://github.com/ifilot/p2000t-video-to-vga-adapter"
 		(at 141.605 115.57 0)
 		(layer "F.SilkS")
 		(uuid "0662db55-d6a0-4785-8fdb-960a04c270d4")

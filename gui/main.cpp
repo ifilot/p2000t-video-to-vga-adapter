@@ -212,9 +212,24 @@ private:
                     "<h3>P2000T VID2VGA Capture %1</h3>"
                     "<p>Live USB capture viewer and configuration utility "
                     "for the Raspberry Pi Pico 2 P2000T video-to-VGA "
-                    "adapter.</p><p>Copyright &copy; 2026 Ivo Filot<br>"
-                    "Licensed under GPL-3.0-or-later.</p>")
-                    .arg(QStringLiteral(P2000T_VIEWER_VERSION)));
+                    "adapter.</p>"
+                    "<p>Copyright &copy; 2026 Ivo Filot</p>"
+                    "<p>This program is free software, licensed under the "
+                    "GNU General Public License version 3 or later. It is "
+                    "provided without warranty.</p>"
+                    "<p>Built with Qt %2. Qt is used under the GNU Lesser "
+                    "General Public License version 3.</p>"
+                    "<p>License texts and notices are in the "
+                    "<code>licenses</code> directory distributed with the "
+                    "application.<br>Source code: "
+                    "github.com/ifilot/p2000t-video-to-vga-adapter</p>")
+                    .arg(QStringLiteral(P2000T_VIEWER_VERSION),
+                         QString::fromLatin1(qVersion())));
+        });
+
+        auto *about_qt = help->addAction(QStringLiteral("About &Qt"));
+        connect(about_qt, &QAction::triggered, this, [this] {
+            QMessageBox::aboutQt(this, QStringLiteral("About Qt"));
         });
     }
 

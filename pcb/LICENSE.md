@@ -1,6 +1,6 @@
 <!--
 SPDX-FileCopyrightText: 2026 Ivo Filot <ivo@ivofilot.nl>
-SPDX-License-Identifier: CC-BY-4.0
+SPDX-License-Identifier: CERN-OHL-S-2.0
 -->
 
 # Hardware license
@@ -13,7 +13,7 @@ licensed under the CERN Open Hardware Licence Version 2—Strongly Reciprocal
 
 You may redistribute and modify the design, and make or distribute products
 based on it, subject to the terms of that license. The complete license text is
-available from the CERN Open Hardware Licence project.
+in [`../LICENSES/CERN-OHL-S-2.0.txt`](../LICENSES/CERN-OHL-S-2.0.txt).
 
 The permanent source location is:
 
