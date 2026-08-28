@@ -1,0 +1,127 @@
+; SPDX-FileCopyrightText: 2026 Ivo Filot <ivo@ivofilot.nl>
+; SPDX-License-Identifier: GPL-3.0-or-later
+;
+; Experimental Pico 2 capture path. Each nominal 6 MHz source dot produces
+; two three-tick windows at the full 126 MHz PIO clock. The programs differ
+; only in their hard-coded WAIT GPIO because the production and mirrored
+; prototype boards place conditioned CSYNC on GP16 and GP17 respectively.
+;
+; The six IN instructions plus their delays and the loop JMP occupy exactly
+; 21 clocks. Window centers are ten then eleven clocks apart, matching the
+; normal two-tap cadence. The host-side start-delay compensation aligns those
+; centers with the normal capture program's ticks 6 and 16.
+
+.program p2000t_window_capture_sync16
+
+.wrap_target
+    pull block
+    mov y, osr
+
+find_vertical_start_16:
+    wait 1 gpio 16
+vertical_candidate_16:
+    set x, 31
+vertical_measure_16:
+    jmp pin vertical_continue_16
+    jmp find_vertical_start_16
+vertical_continue_16:
+    jmp x-- vertical_measure_16 [23]
+vertical_end_16:
+    jmp pin vertical_end_16
+
+    pull block
+    mov x, osr
+skip_line_16:
+    wait 0 gpio 16
+    wait 1 gpio 16
+    jmp x-- skip_line_16
+
+line_start_delay_16:
+    pull block
+    mov x, osr
+phase_delay_loop_16:
+    jmp x-- phase_delay_loop_16
+    pull block
+    mov x, osr
+
+sample_source_dot_16:
+    in pins, 4
+    in pins, 4
+    in pins, 4 [7]
+    in pins, 4
+    in pins, 4
+    in pins, 4 [7]
+    jmp x-- sample_source_dot_16
+
+    jmp y-- next_line_wait_active_16
+.wrap
+
+next_line_wait_active_16:
+    set x, 15
+horizontal_sync_holdoff_16:
+    jmp x-- horizontal_sync_holdoff_16 [31]
+horizontal_sync_wait_active_16:
+    ; WAIT observes every PIO clock. A delayed polling JMP would quantize the
+    ; detected line edge and turn its instruction delay into horizontal jitter.
+    wait 1 gpio 16
+horizontal_sync_confirm_16:
+    nop [31]
+    jmp pin line_start_delay_16
+    jmp horizontal_sync_wait_active_16
+
+.program p2000t_window_capture_sync17
+
+.wrap_target
+    pull block
+    mov y, osr
+
+find_vertical_start_17:
+    wait 1 gpio 17
+vertical_candidate_17:
+    set x, 31
+vertical_measure_17:
+    jmp pin vertical_continue_17
+    jmp find_vertical_start_17
+vertical_continue_17:
+    jmp x-- vertical_measure_17 [23]
+vertical_end_17:
+    jmp pin vertical_end_17
+
+    pull block
+    mov x, osr
+skip_line_17:
+    wait 0 gpio 17
+    wait 1 gpio 17
+    jmp x-- skip_line_17
+
+line_start_delay_17:
+    pull block
+    mov x, osr
+phase_delay_loop_17:
+    jmp x-- phase_delay_loop_17
+    pull block
+    mov x, osr
+
+sample_source_dot_17:
+    in pins, 4
+    in pins, 4
+    in pins, 4 [7]
+    in pins, 4
+    in pins, 4
+    in pins, 4 [7]
+    jmp x-- sample_source_dot_17
+
+    jmp y-- next_line_wait_active_17
+.wrap
+
+next_line_wait_active_17:
+    set x, 15
+horizontal_sync_holdoff_17:
+    jmp x-- horizontal_sync_holdoff_17 [31]
+horizontal_sync_wait_active_17:
+    ; Keep edge detection clock-accurate; the following delay qualifies it.
+    wait 1 gpio 17
+horizontal_sync_confirm_17:
+    nop [31]
+    jmp pin line_start_delay_17
+    jmp horizontal_sync_wait_active_17

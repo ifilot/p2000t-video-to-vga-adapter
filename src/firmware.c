@@ -28,6 +28,8 @@
 #include "pico/stdlib.h"
 
 #if defined(PICO_RP2350) && PICO_RP2350
+#include "p2000t_diagnostic_protocol.h"
+#include "p2000t_diagnostics.h"
 #include "p2000t_stream_protocol.h"
 #include "p2000t_usb_stream.h"
 #endif
@@ -164,8 +166,27 @@ static volatile uint32_t requested_no_signal_artwork =
 /** Active and last successfully persisted user configuration. */
 static p2000t_settings_t current_settings;
 static p2000t_settings_t stored_settings;
+static unsigned stored_reconstruction_mode;
 static bool stored_settings_valid;
 static bool settings_save_failed;
+/** Live reconstruction is stored separately from the legacy packed bit. */
+static unsigned current_reconstruction_mode =
+    P2000T_CONTROL_DEFAULT_SAMPLE_RECONSTRUCTION;
+
+#if defined(PICO_RP2350) && PICO_RP2350
+enum {
+    FIRMWARE_DEFAULT_SAMPLE_PHASE = P2000T_CONTROL_PICO2_DEFAULT_PHASE,
+    FIRMWARE_DEFAULT_ODD_LINE_PHASE =
+        P2000T_CONTROL_PICO2_DEFAULT_ODD_LINE_PHASE,
+};
+#else
+enum {
+    FIRMWARE_DEFAULT_SAMPLE_PHASE = P2000T_CONTROL_DEFAULT_PHASE,
+    FIRMWARE_DEFAULT_ODD_LINE_PHASE = P2000T_CONTROL_DEFAULT_ODD_LINE_PHASE,
+};
+#endif
+
+static const char *sample_reconstruction_name(unsigned reconstruction);
 
 /** On-board LED state, owned exclusively by the control core. */
 static uint64_t status_led_state_started_us;
@@ -434,12 +455,21 @@ static void print_status(void) {
            capture.first_visible_scanline, capture.horizontal_offset,
            capture.sample_phase, capture.odd_line_phase,
            capture.sample_rate_trim,
-           p2000t_settings_sample_reconstruction(&current_settings) ==
-                   P2000T_CONTROL_SAMPLE_RECONSTRUCTION_SECOND_TAP
-               ? "second-tap"
-               : "raw",
+           sample_reconstruction_name(current_reconstruction_mode),
            capture.stale_frames_replaced, vga_frames, swaps, repeats, lost,
            id_gaps, sequence, artwork + 1u);
+#if defined(PICO_RP2350) && PICO_RP2350
+    printf(
+        "Capture engine=%s pending=%s window_frames=%" PRIu32
+        " corrected=%" PRIu32 " ambiguous=%" PRIu32 " rgb=%" PRIu32 "/%" PRIu32
+        "/%" PRIu32 " line_deadline_misses=%" PRIu32 "\n",
+        capture.capture_engine == P2000T_CAPTURE_ENGINE_WINDOWED ? "windowed-3x"
+                                                                 : "two-tap",
+        capture.engine_switch_pending ? "yes" : "no", capture.windowed_frames,
+        capture.last_corrected_samples, capture.last_ambiguous_samples,
+        capture.last_red_corrections, capture.last_green_corrections,
+        capture.last_blue_corrections, capture.line_deadline_misses);
+#endif
 #if defined(PICO_RP2350) && PICO_RP2350
     p2000t_usb_stream_stats_t stream;
     p2000t_usb_stream_get_stats(&stream);
@@ -470,6 +500,8 @@ static void print_help(void) {
 #if defined(PICO_RP2350) && PICO_RP2350
     printf("Pico 2 screen capture: c=PackBits stream, r=raw stream, "
            "q=return to console\n");
+    printf("Pico 2 high-resolution diagnostics are controlled by the "
+           "desktop viewer.\n");
 #endif
 }
 
@@ -507,21 +539,48 @@ static void select_no_signal_artwork(p2000t_no_signal_artwork_t artwork,
     }
 }
 
-/** Apply one validated raw/second-tap source-dot reconstruction mode. */
+/** Return a stable machine-readable name for one reconstruction mode. */
+static const char *sample_reconstruction_name(unsigned reconstruction) {
+    static const char *const names[P2000T_CONTROL_SAMPLE_RECONSTRUCTION_COUNT] =
+        {
+            "raw",
+            "guarded-duplicate",
+            "sharp-guarded",
+            "window-center",
+            "window-channel",
+            "window-color-early",
+            "window-color-late",
+        };
+    return reconstruction < P2000T_CONTROL_SAMPLE_RECONSTRUCTION_COUNT
+               ? names[reconstruction]
+               : "invalid";
+}
+
+/** Apply one validated live reconstruction mode. */
 static void select_sample_reconstruction(unsigned reconstruction, bool quiet) {
     hard_assert(reconstruction < P2000T_CONTROL_SAMPLE_RECONSTRUCTION_COUNT);
-    p2000t_settings_set_sample_reconstruction(&current_settings,
-                                              reconstruction);
-    const bool second_tap =
-        reconstruction == P2000T_CONTROL_SAMPLE_RECONSTRUCTION_SECOND_TAP;
-    p2000t_video_renderer_set_second_tap_reconstruction(second_tap);
+    if (!p2000t_capture_set_reconstruction_mode(reconstruction)) {
+        if (!quiet) {
+            printf("Reconstruction %s is unavailable on this processor.\n",
+                   sample_reconstruction_name(reconstruction));
+        }
+        return;
+    }
+    current_reconstruction_mode = reconstruction;
+    /* Retain the legacy packed bit for backward-compatible state payloads.
+       The v2 flash record stores the complete live mode independently. */
+    if (reconstruction <= P2000T_CONTROL_SAMPLE_RECONSTRUCTION_SECOND_TAP) {
+        p2000t_settings_set_sample_reconstruction(&current_settings,
+                                                  reconstruction);
+    }
+    p2000t_video_renderer_set_reconstruction(reconstruction);
 #if defined(PICO_RP2350) && PICO_RP2350
-    p2000t_usb_stream_set_second_tap_reconstruction(second_tap);
+    p2000t_usb_stream_set_reconstruction(reconstruction);
 #endif
     if (!quiet) {
-        printf("Source-dot reconstruction set to %s; applies at the next "
-               "VGA frame.\n",
-               second_tap ? "duplicate second tap" : "raw dual tap");
+        printf("Source reconstruction set to %s; applies at the next source "
+               "frame boundary.\n",
+               sample_reconstruction_name(reconstruction));
     }
 }
 
@@ -668,7 +727,8 @@ static void adjust_horizontal_offset(int change, bool quiet) {
  */
 static void handle_usb_command(int command) {
 #if defined(PICO_RP2350) && PICO_RP2350
-    const bool quiet = p2000t_usb_stream_active();
+    const bool quiet =
+        p2000t_usb_stream_active() || p2000t_diagnostics_active();
 #else
     const bool quiet = false;
 #endif
@@ -693,7 +753,9 @@ static void handle_usb_command(int command) {
         break;
     case 'q':
     case 'Q':
-        if (p2000t_usb_stream_active()) {
+        if (p2000t_diagnostics_active()) {
+            p2000t_diagnostics_cancel();
+        } else if (p2000t_usb_stream_active()) {
             p2000t_usb_stream_stop();
             printf("\nUSB screen stream stopped.\n");
         }
@@ -730,11 +792,11 @@ static void handle_usb_command(int command) {
         break;
     case 'p':
     case 'P':
-        if (p2000t_capture_set_sample_phase(P2000T_DEFAULT_SAMPLE_PHASE)) {
-            current_settings.sample_phase = P2000T_DEFAULT_SAMPLE_PHASE;
+        if (p2000t_capture_set_sample_phase(FIRMWARE_DEFAULT_SAMPLE_PHASE)) {
+            current_settings.sample_phase = FIRMWARE_DEFAULT_SAMPLE_PHASE;
             if (!quiet) {
                 printf("Sample phase reset to %d.\n",
-                       P2000T_DEFAULT_SAMPLE_PHASE);
+                       FIRMWARE_DEFAULT_SAMPLE_PHASE);
             }
         }
         break;
@@ -746,11 +808,12 @@ static void handle_usb_command(int command) {
         break;
     case 'o':
     case 'O':
-        if (p2000t_capture_set_odd_line_phase(P2000T_DEFAULT_ODD_LINE_PHASE)) {
-            current_settings.odd_line_phase = P2000T_DEFAULT_ODD_LINE_PHASE;
+        if (p2000t_capture_set_odd_line_phase(
+                FIRMWARE_DEFAULT_ODD_LINE_PHASE)) {
+            current_settings.odd_line_phase = FIRMWARE_DEFAULT_ODD_LINE_PHASE;
             if (!quiet) {
                 printf("Odd-line phase reset to %d.\n",
-                       P2000T_DEFAULT_ODD_LINE_PHASE);
+                       FIRMWARE_DEFAULT_ODD_LINE_PHASE);
             }
         }
         break;
@@ -775,7 +838,7 @@ static void handle_usb_command(int command) {
     case 'd':
     case 'D':
         select_sample_reconstruction(
-            p2000t_settings_sample_reconstruction(&current_settings) ==
+            current_reconstruction_mode ==
                     P2000T_CONTROL_SAMPLE_RECONSTRUCTION_RAW
                 ? P2000T_CONTROL_SAMPLE_RECONSTRUCTION_SECOND_TAP
                 : P2000T_CONTROL_SAMPLE_RECONSTRUCTION_RAW,
@@ -836,14 +899,24 @@ static void control_store_u16(uint8_t *destination, uint16_t value) {
     destination[1] = (uint8_t)(value >> 8u);
 }
 
+static void control_store_u32(uint8_t *destination, uint32_t value) {
+    destination[0] = (uint8_t)value;
+    destination[1] = (uint8_t)(value >> 8u);
+    destination[2] = (uint8_t)(value >> 16u);
+    destination[3] = (uint8_t)(value >> 24u);
+}
+
 static void queue_configuration_state(void) {
+    p2000t_capture_stats_t capture;
+    p2000t_capture_get_stats(&capture);
     uint8_t payload[P2000T_CONFIGURATION_STATE_SIZE] = {0};
     memcpy(payload, P2000T_CONFIGURATION_STATE_MAGIC, 4u);
     payload[4] = P2000T_CONFIGURATION_STATE_VERSION;
     if (stored_settings_valid) {
         payload[5] |= P2000T_CONFIGURATION_FLAG_STORED_AVAILABLE;
         if (memcmp(&current_settings, &stored_settings,
-                   sizeof(current_settings)) == 0) {
+                   sizeof(current_settings)) == 0 &&
+            current_reconstruction_mode == stored_reconstruction_mode) {
             payload[5] |= P2000T_CONFIGURATION_FLAG_MATCHES_STORED;
         }
     }
@@ -863,12 +936,44 @@ static void queue_configuration_state(void) {
             &payload[P2000T_CONFIGURATION_PALETTE_OFFSET + index * 2u],
             current_settings.palette[index]);
     }
+    payload[P2000T_CONFIGURATION_RUNTIME_RECONSTRUCTION_OFFSET] =
+        (uint8_t)current_reconstruction_mode;
+    payload[P2000T_CONFIGURATION_CAPTURE_ENGINE_OFFSET] =
+        capture.capture_engine;
+    payload[P2000T_CONFIGURATION_WINDOW_SAMPLES_OFFSET] =
+        capture.window_samples;
+    if (capture.window_supported) {
+        payload[P2000T_CONFIGURATION_CAPTURE_FLAGS_OFFSET] |=
+            P2000T_CONFIGURATION_CAPTURE_FLAG_WINDOW_SUPPORTED;
+    }
+    if (capture.engine_switch_pending) {
+        payload[P2000T_CONFIGURATION_CAPTURE_FLAGS_OFFSET] |=
+            P2000T_CONFIGURATION_CAPTURE_FLAG_ENGINE_SWITCH_PENDING;
+    }
+    control_store_u32(&payload[P2000T_CONFIGURATION_WINDOW_FRAMES_OFFSET],
+                      capture.windowed_frames);
+    control_store_u32(&payload[P2000T_CONFIGURATION_LAST_CORRECTED_OFFSET],
+                      capture.last_corrected_samples);
+    control_store_u32(&payload[P2000T_CONFIGURATION_LAST_AMBIGUOUS_OFFSET],
+                      capture.last_ambiguous_samples);
+    control_store_u32(&payload[P2000T_CONFIGURATION_LAST_RED_CORRECTED_OFFSET],
+                      capture.last_red_corrections);
+    control_store_u32(
+        &payload[P2000T_CONFIGURATION_LAST_GREEN_CORRECTED_OFFSET],
+        capture.last_green_corrections);
+    control_store_u32(&payload[P2000T_CONFIGURATION_LAST_BLUE_CORRECTED_OFFSET],
+                      capture.last_blue_corrections);
+    control_store_u32(
+        &payload[P2000T_CONFIGURATION_LINE_DEADLINE_MISSES_OFFSET],
+        capture.line_deadline_misses);
     p2000t_usb_stream_queue_configuration(payload, sizeof(payload));
 }
 #endif
 
-static void apply_settings(const p2000t_settings_t *settings) {
+static void apply_settings(const p2000t_settings_t *settings,
+                           unsigned reconstruction) {
     hard_assert(p2000t_settings_valid(settings));
+    hard_assert(reconstruction < P2000T_CONTROL_SAMPLE_RECONSTRUCTION_COUNT);
     current_settings = *settings;
     p2000t_capture_set_first_visible_scanline(
         current_settings.first_visible_scanline);
@@ -877,8 +982,7 @@ static void apply_settings(const p2000t_settings_t *settings) {
     p2000t_capture_set_sample_rate_trim(
         p2000t_settings_sample_rate_trim(&current_settings));
     p2000t_capture_set_horizontal_offset(current_settings.horizontal_offset);
-    select_sample_reconstruction(
-        p2000t_settings_sample_reconstruction(&current_settings), true);
+    select_sample_reconstruction(reconstruction, true);
     store_statistic(&requested_no_signal_artwork,
                     p2000t_settings_artwork(&current_settings));
     p2000t_video_renderer_set_source_palette(current_settings.palette);
@@ -951,23 +1055,43 @@ static void handle_control_packet(void) {
         }
         break;
     case P2000T_CONTROL_SAVE_SETTINGS:
-        settings_save_failed = !p2000t_settings_save(&current_settings);
+        settings_save_failed = !p2000t_settings_save(
+            &current_settings, current_reconstruction_mode);
+        p2000t_capture_resume_after_flash();
         if (!settings_save_failed) {
             stored_settings = current_settings;
+            stored_reconstruction_mode = current_reconstruction_mode;
             stored_settings_valid = true;
         }
         break;
     case P2000T_CONTROL_LOAD_SETTINGS:
         if (stored_settings_valid) {
-            apply_settings(&stored_settings);
+            apply_settings(&stored_settings, stored_reconstruction_mode);
         }
         break;
     case P2000T_CONTROL_FACTORY_DEFAULTS: {
         p2000t_settings_t defaults;
-        p2000t_settings_defaults(&defaults);
-        apply_settings(&defaults);
+        unsigned default_reconstruction;
+        p2000t_settings_defaults(&defaults, &default_reconstruction);
+        apply_settings(&defaults, default_reconstruction);
         break;
     }
+#if defined(PICO_RP2350) && PICO_RP2350
+    case P2000T_CONTROL_START_DIAGNOSTICS: {
+        const unsigned start_line = value & 0xffffu;
+        const unsigned repetitions = value >> 16u;
+        const unsigned line_count = argument;
+        if (p2000t_diagnostics_active()) {
+            break;
+        }
+        p2000t_usb_stream_stop();
+        p2000t_diagnostics_start(start_line, line_count, repetitions);
+        break;
+    }
+    case P2000T_CONTROL_CANCEL_DIAGNOSTICS:
+        p2000t_diagnostics_cancel();
+        break;
+#endif
     default:
         return;
     }
@@ -1011,6 +1135,12 @@ static void poll_usb_commands(void) {
             continue;
         }
 #if defined(PICO_RP2350) && PICO_RP2350
+        if (p2000t_diagnostics_active()) {
+            if (command == 'q' || command == 'Q' || command == 0x1b) {
+                p2000t_diagnostics_cancel();
+            }
+            continue;
+        }
         if (p2000t_usb_stream_active()) {
             const bool stream_command =
                 command == 'q' || command == 'Q' || command == 0x1b;
@@ -1053,6 +1183,7 @@ static void announce_usb_connection(void) {
 #if defined(PICO_RP2350) && PICO_RP2350
     printf("USB capture: 480x240 planar RGB111, raw or lossless PackBits, "
            "25 FPS target\n");
+    printf("Diagnostics: PIO2 63MHz CSYNC trace and 126MHz raw RGBS bursts\n");
 #endif
     printf("EXPERIMENTAL clock=%uMHz core_voltage=%u.%03uV; "
            "capture=12MHz raw VGA=25.2MHz\n",
@@ -1081,15 +1212,16 @@ static void configure_system_clock(void) {
 int main(void) {
     configure_system_clock();
     stdio_init_all();
-    p2000t_settings_defaults(&current_settings);
-    stored_settings_valid = p2000t_settings_load(&stored_settings);
+    p2000t_settings_defaults(&current_settings, &current_reconstruction_mode);
+    stored_settings_valid =
+        p2000t_settings_load(&stored_settings, &stored_reconstruction_mode);
     if (stored_settings_valid) {
         current_settings = stored_settings;
+        current_reconstruction_mode = stored_reconstruction_mode;
     }
     p2000t_video_renderer_initialize();
     p2000t_video_renderer_set_source_palette(current_settings.palette);
-    select_sample_reconstruction(
-        p2000t_settings_sample_reconstruction(&current_settings), true);
+    select_sample_reconstruction(current_reconstruction_mode, true);
 
     /* Scanvideo owns PIO0 and its fixed DMA channel. Capture then claims PIO1
        and two otherwise-unused DMA channels. */
@@ -1130,6 +1262,11 @@ int main(void) {
         }
         poll_usb_commands();
 #if defined(PICO_RP2350) && PICO_RP2350
+        if (p2000t_diagnostics_active()) {
+            p2000t_diagnostics_service();
+            sleep_us(100u);
+            continue;
+        }
         if (p2000t_usb_stream_active()) {
             p2000t_usb_stream_service(
                 signal_present,

@@ -14,6 +14,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "p2000t_reconstruction.h"
+
 /** Capture geometry, adjustment limits, and conditioned input pin mapping. */
 enum {
     P2000T_CAPTURE_WIDTH = 480,
@@ -104,10 +106,23 @@ typedef struct {
     uint32_t last_frame_period_us;  /**< Most recent source frame period. */
     uint32_t first_visible_scanline; /**< Active vertical capture alignment. */
     int32_t sample_phase;            /**< Fine sampling phase in PIO ticks. */
-    int32_t odd_line_phase; /**< Extra phase on odd-numbered source lines. */
+    int32_t odd_line_phase;   /**< Extra phase on odd-numbered source lines. */
     int32_t sample_rate_trim; /**< Signed 1/256 PIO-divider rate trim. */
-    uint32_t horizontal_offset;      /**< Coarse start in source dots. */
-    bool signal_present;             /**< Whether source timing is credible. */
+    uint32_t horizontal_offset; /**< Coarse start in source dots. */
+    bool signal_present;        /**< Whether source timing is credible. */
+    uint32_t windowed_frames;   /**< Complete six-tap frames reconstructed. */
+    uint32_t line_deadline_misses; /**< Late/coalesced window-line IRQs. */
+    uint32_t
+        last_corrected_samples; /**< Pixels changed in last window frame. */
+    uint32_t last_ambiguous_samples; /**< Three-distinct-sample windows. */
+    uint32_t last_red_corrections;   /**< Last-frame red channel changes. */
+    uint32_t last_green_corrections; /**< Last-frame green channel changes. */
+    uint32_t last_blue_corrections;  /**< Last-frame blue channel changes. */
+    uint8_t reconstruction_mode;     /**< Requested live reconstruction. */
+    uint8_t capture_engine;          /**< Active two-tap/windowed engine. */
+    uint8_t window_samples;          /**< Raw samples per output pixel. */
+    bool window_supported;      /**< Whether this target has six-tap PIO. */
+    bool engine_switch_pending; /**< Requested engine awaits a boundary. */
 } p2000t_capture_stats_t;
 
 /**
@@ -117,6 +132,15 @@ typedef struct {
  * It must be called once before any other capture API function.
  */
 void p2000t_capture_start(void);
+
+/**
+ * @brief Re-arm capture after a flash-safe operation paused interrupt service.
+ *
+ * Flash erase/program can span one or more window-line DMA completions. Call
+ * this from core 0 after the flash-safe operation returns so a coalesced or
+ * lost completion cannot leave the ping-pong capture engine stopped.
+ */
+void p2000t_capture_resume_after_flash(void);
 
 /**
  * @brief Determine whether credible complete source frames are arriving.
@@ -167,6 +191,10 @@ void p2000t_capture_release_frame_from_usb(unsigned buffer_index);
  * @return Pointer to P2000T_CAPTURE_WORDS_PER_FRAME packed words.
  */
 const uint32_t *p2000t_capture_buffer(unsigned buffer_index);
+
+/** Copy reconstruction evidence associated with one complete frame buffer. */
+void p2000t_capture_get_frame_diagnostics(
+    unsigned buffer_index, p2000t_reconstruction_diagnostics_t *diagnostics);
 
 /**
  * @brief Copy a consistent snapshot of acquisition statistics.
@@ -221,5 +249,8 @@ bool p2000t_capture_set_sample_rate_trim(int trim);
  * @return true when accepted; false when outside the documented limits.
  */
 bool p2000t_capture_set_horizontal_offset(unsigned pixels);
+
+/** Select a live reconstruction mode, including Pico 2 windowed policies. */
+bool p2000t_capture_set_reconstruction_mode(unsigned reconstruction);
 
 #endif

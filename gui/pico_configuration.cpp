@@ -28,6 +28,14 @@ quint16 loadU16(const char *data) {
            (static_cast<quint16>(bytes[1]) << 8u);
 }
 
+quint32 loadU32(const char *data) {
+    const auto *bytes = reinterpret_cast<const unsigned char *>(data);
+    return static_cast<quint32>(bytes[0]) |
+           (static_cast<quint32>(bytes[1]) << 8u) |
+           (static_cast<quint32>(bytes[2]) << 16u) |
+           (static_cast<quint32>(bytes[3]) << 24u);
+}
+
 void storeU16(char *destination, quint16 value) {
     destination[0] = static_cast<char>(value);
     destination[1] = static_cast<char>(value >> 8u);
@@ -59,15 +67,20 @@ QByteArray makePicoControlPacket(quint8 opcode, quint8 argument,
 bool decodePicoConfiguration(const QByteArray &payload,
                              PicoConfiguration *configuration) {
     if (configuration == nullptr ||
-        payload.size() != P2000T_CONFIGURATION_STATE_SIZE ||
+        payload.size() < P2000T_CONFIGURATION_STATE_LEGACY_SIZE ||
         std::memcmp(payload.constData(), P2000T_CONFIGURATION_STATE_MAGIC,
                     4u) != 0 ||
-        loadU16(&payload.constData()[6]) != P2000T_CONFIGURATION_STATE_SIZE) {
+        loadU16(&payload.constData()[6]) !=
+            static_cast<quint16>(payload.size())) {
         return false;
     }
     const quint8 version = static_cast<quint8>(payload[4]);
     if (version < P2000T_CONFIGURATION_STATE_LEGACY_VERSION ||
-        version > P2000T_CONFIGURATION_STATE_VERSION) {
+        version > P2000T_CONFIGURATION_STATE_VERSION ||
+        (version < P2000T_CONFIGURATION_STATE_RUNTIME_RECONSTRUCTION_VERSION &&
+         payload.size() != P2000T_CONFIGURATION_STATE_LEGACY_SIZE) ||
+        (version >= P2000T_CONFIGURATION_STATE_RUNTIME_RECONSTRUCTION_VERSION &&
+         payload.size() != P2000T_CONFIGURATION_STATE_SIZE)) {
         return false;
     }
     PicoConfiguration result;
@@ -93,7 +106,40 @@ bool decodePicoConfiguration(const QByteArray &payload,
             P2000T_CONFIGURATION_RATE_TRIM_VALUE_MASK;
         result.sampleRateTrim = (encoded & 0x10) != 0 ? encoded - 32 : encoded;
     }
-    if (version >= P2000T_CONFIGURATION_STATE_VERSION) {
+    if (version >= P2000T_CONFIGURATION_STATE_RUNTIME_RECONSTRUCTION_VERSION) {
+        result.sampleReconstruction = static_cast<quint8>(
+            payload[P2000T_CONFIGURATION_RUNTIME_RECONSTRUCTION_OFFSET]);
+        result.captureEngine = static_cast<quint8>(
+            payload[P2000T_CONFIGURATION_CAPTURE_ENGINE_OFFSET]);
+        result.windowSamples = static_cast<quint8>(
+            payload[P2000T_CONFIGURATION_WINDOW_SAMPLES_OFFSET]);
+        const quint8 captureFlags = static_cast<quint8>(
+            payload[P2000T_CONFIGURATION_CAPTURE_FLAGS_OFFSET]);
+        result.windowSupported =
+            (captureFlags &
+             P2000T_CONFIGURATION_CAPTURE_FLAG_WINDOW_SUPPORTED) != 0u;
+        result.engineSwitchPending =
+            (captureFlags &
+             P2000T_CONFIGURATION_CAPTURE_FLAG_ENGINE_SWITCH_PENDING) != 0u;
+        result.windowedFrames = loadU32(
+            &payload.constData()[P2000T_CONFIGURATION_WINDOW_FRAMES_OFFSET]);
+        result.lastCorrectedSamples = loadU32(
+            &payload.constData()[P2000T_CONFIGURATION_LAST_CORRECTED_OFFSET]);
+        result.lastAmbiguousSamples = loadU32(
+            &payload.constData()[P2000T_CONFIGURATION_LAST_AMBIGUOUS_OFFSET]);
+        result.lastRedCorrections = loadU32(
+            &payload
+                 .constData()[P2000T_CONFIGURATION_LAST_RED_CORRECTED_OFFSET]);
+        result.lastGreenCorrections =
+            loadU32(&payload.constData()
+                         [P2000T_CONFIGURATION_LAST_GREEN_CORRECTED_OFFSET]);
+        result.lastBlueCorrections = loadU32(
+            &payload
+                 .constData()[P2000T_CONFIGURATION_LAST_BLUE_CORRECTED_OFFSET]);
+        result.lineDeadlineMisses =
+            loadU32(&payload.constData()
+                         [P2000T_CONFIGURATION_LINE_DEADLINE_MISSES_OFFSET]);
+    } else if (version >= P2000T_CONFIGURATION_STATE_RECONSTRUCTION_VERSION) {
         result.sampleReconstruction =
             (captureOptions &
              P2000T_CONFIGURATION_SAMPLE_RECONSTRUCTION_MASK) >>
@@ -119,6 +165,11 @@ bool decodePicoConfiguration(const QByteArray &payload,
             P2000T_CONTROL_SAMPLE_RECONSTRUCTION_RAW ||
         result.sampleReconstruction >=
             P2000T_CONTROL_SAMPLE_RECONSTRUCTION_COUNT ||
+        result.captureEngine < P2000T_CAPTURE_ENGINE_TWO_TAP ||
+        result.captureEngine > P2000T_CAPTURE_ENGINE_WINDOWED ||
+        (result.captureEngine == P2000T_CAPTURE_ENGINE_WINDOWED &&
+         !result.windowSupported) ||
+        (result.windowSamples != 1 && result.windowSamples != 3) ||
         result.horizontal < P2000T_CONTROL_MIN_HORIZONTAL ||
         result.horizontal > P2000T_CONTROL_MAX_HORIZONTAL ||
         result.horizontal % P2000T_CONTROL_HORIZONTAL_STEP != 0 ||

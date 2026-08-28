@@ -15,7 +15,8 @@
 
 enum {
     SETTINGS_MAGIC = 0x53325450u, /* "P2TS" in little-endian order. */
-    SETTINGS_VERSION = 1,
+    SETTINGS_VERSION = 2,
+    SETTINGS_LEGACY_VERSION = 1,
     SETTINGS_FLASH_OFFSET = PICO_FLASH_SIZE_BYTES - FLASH_SECTOR_SIZE,
 };
 
@@ -26,11 +27,33 @@ typedef struct {
     uint16_t version;
     uint16_t size;
     p2000t_settings_t settings;
+    uint8_t reconstruction;
+    uint8_t reserved[3];
     uint32_t crc32;
 } settings_record_t;
 
+/** v0.3.x record retained for in-place migration on first v0.4.0 save. */
+typedef struct {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t size;
+    p2000t_settings_t settings;
+    uint32_t crc32;
+} legacy_settings_record_t;
+
 _Static_assert(sizeof(settings_record_t) <= FLASH_PAGE_SIZE,
                "Persistent settings must fit in one flash page");
+_Static_assert(sizeof(legacy_settings_record_t) == 36u,
+               "Legacy settings layout must remain readable");
+
+/** Return whether a reconstruction mode is supported by this processor. */
+static bool reconstruction_valid(unsigned reconstruction) {
+#if defined(PICO_RP2350) && PICO_RP2350
+    return reconstruction < P2000T_CONTROL_SAMPLE_RECONSTRUCTION_COUNT;
+#else
+    return reconstruction < P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_FIRST;
+#endif
+}
 
 static uint32_t settings_crc32(const uint8_t *data, size_t length) {
     uint32_t crc = 0xffffffffu;
@@ -94,20 +117,30 @@ void p2000t_settings_set_sample_rate_trim(p2000t_settings_t *settings,
                   encoded);
 }
 
-void p2000t_settings_defaults(p2000t_settings_t *settings) {
+void p2000t_settings_defaults(p2000t_settings_t *settings,
+                              unsigned *reconstruction) {
     static const uint16_t default_palette[P2000T_CONTROL_PALETTE_COLORS] = {
         0x0000, 0x000f, 0x00f0, 0x00ff, 0x0f00, 0x0f0f, 0x0ff0, 0x0fff,
     };
+    hard_assert(settings != NULL);
+    hard_assert(reconstruction != NULL);
     memset(settings, 0, sizeof(*settings));
     settings->first_visible_scanline = P2000T_CONTROL_DEFAULT_VERTICAL;
+#if defined(PICO_RP2350) && PICO_RP2350
+    settings->sample_phase = P2000T_CONTROL_PICO2_DEFAULT_PHASE;
+    settings->odd_line_phase = P2000T_CONTROL_PICO2_DEFAULT_ODD_LINE_PHASE;
+    *reconstruction = P2000T_CONTROL_PICO2_DEFAULT_SAMPLE_RECONSTRUCTION;
+#else
     settings->sample_phase = P2000T_CONTROL_DEFAULT_PHASE;
+    settings->odd_line_phase = P2000T_CONTROL_DEFAULT_ODD_LINE_PHASE;
+    *reconstruction = P2000T_CONTROL_DEFAULT_SAMPLE_RECONSTRUCTION;
+#endif
     settings->horizontal_offset = P2000T_CONTROL_DEFAULT_HORIZONTAL;
     p2000t_settings_set_artwork(settings, P2000T_CONTROL_DEFAULT_ARTWORK);
     p2000t_settings_set_sample_rate_trim(
         settings, P2000T_CONTROL_DEFAULT_SAMPLE_RATE_TRIM);
     p2000t_settings_set_sample_reconstruction(
         settings, P2000T_CONTROL_DEFAULT_SAMPLE_RECONSTRUCTION);
-    settings->odd_line_phase = P2000T_CONTROL_DEFAULT_ODD_LINE_PHASE;
     memcpy(settings->palette, default_palette, sizeof(default_palette));
 }
 
@@ -138,22 +171,46 @@ bool p2000t_settings_valid(const p2000t_settings_t *settings) {
     return true;
 }
 
-bool p2000t_settings_load(p2000t_settings_t *settings) {
+bool p2000t_settings_load(p2000t_settings_t *settings,
+                          unsigned *reconstruction) {
+    if (settings == NULL || reconstruction == NULL) {
+        return false;
+    }
     if ((uintptr_t)&__flash_binary_end - XIP_BASE > SETTINGS_FLASH_OFFSET) {
         return false;
     }
     const settings_record_t *record =
         (const settings_record_t *)(XIP_BASE + SETTINGS_FLASH_OFFSET);
-    if (record->magic != SETTINGS_MAGIC ||
-        record->version != SETTINGS_VERSION ||
-        record->size != sizeof(record->settings) ||
-        settings_crc32((const uint8_t *)record,
-                       offsetof(settings_record_t, crc32)) != record->crc32 ||
-        !p2000t_settings_valid(&record->settings)) {
+    if (record->magic != SETTINGS_MAGIC) {
         return false;
     }
-    *settings = record->settings;
-    return true;
+    if (record->version == SETTINGS_VERSION &&
+        record->size == sizeof(record->settings) +
+                            sizeof(record->reconstruction) +
+                            sizeof(record->reserved) &&
+        settings_crc32((const uint8_t *)record,
+                       offsetof(settings_record_t, crc32)) == record->crc32 &&
+        p2000t_settings_valid(&record->settings) &&
+        reconstruction_valid(record->reconstruction)) {
+        *settings = record->settings;
+        *reconstruction = record->reconstruction;
+        return true;
+    }
+
+    const legacy_settings_record_t *legacy =
+        (const legacy_settings_record_t *)record;
+    if (legacy->version == SETTINGS_LEGACY_VERSION &&
+        legacy->size == sizeof(legacy->settings) &&
+        settings_crc32((const uint8_t *)legacy,
+                       offsetof(legacy_settings_record_t, crc32)) ==
+            legacy->crc32 &&
+        p2000t_settings_valid(&legacy->settings)) {
+        *settings = legacy->settings;
+        *reconstruction =
+            p2000t_settings_sample_reconstruction(&legacy->settings);
+        return true;
+    }
+    return false;
 }
 
 typedef union {
@@ -167,8 +224,10 @@ static void __not_in_flash_func(write_settings_page)(void *parameter) {
     flash_range_program(SETTINGS_FLASH_OFFSET, write->page, FLASH_PAGE_SIZE);
 }
 
-bool p2000t_settings_save(const p2000t_settings_t *settings) {
+bool p2000t_settings_save(const p2000t_settings_t *settings,
+                          unsigned reconstruction) {
     if (!p2000t_settings_valid(settings) ||
+        !reconstruction_valid(reconstruction) ||
         (uintptr_t)&__flash_binary_end - XIP_BASE > SETTINGS_FLASH_OFFSET) {
         return false;
     }
@@ -177,8 +236,11 @@ bool p2000t_settings_save(const p2000t_settings_t *settings) {
     settings_record_t *record = &write.record;
     record->magic = SETTINGS_MAGIC;
     record->version = SETTINGS_VERSION;
-    record->size = sizeof(record->settings);
+    record->size = sizeof(record->settings) + sizeof(record->reconstruction) +
+                   sizeof(record->reserved);
     record->settings = *settings;
+    record->reconstruction = (uint8_t)reconstruction;
+    memset(record->reserved, 0, sizeof(record->reserved));
     record->crc32 = settings_crc32((const uint8_t *)record,
                                    offsetof(settings_record_t, crc32));
     return flash_safe_execute(write_settings_page, &write, 1000u) == PICO_OK;

@@ -19,8 +19,8 @@ CDC port and start the selected stream encoding. Manual port refresh and
 connect/disconnect controls remain available. Adapter > Configure Pico 2 opens
 a modal with exact spin boxes for capture alignment, an artwork selector, an
 independent odd-line sampling-phase correction, and a whole-line sampling-rate
-trim, a raw/second-tap source-dot reconstruction selector, plus eight RGB444
-color rows with channel spinners and color pickers.
+trim, raw/guarded/sharp reconstruction and Pico 2 126 MHz window policies,
+plus eight RGB444 color rows with channel spinners and color pickers.
 Every edit is sent to the Pico
 immediately for live debugging. Reload from Pico retrieves the saved flash
 copy, Factory defaults restores firmware defaults, and Save to Pico writes the
@@ -44,9 +44,45 @@ selected parent directory. Setting acknowledgements are retried and time out
 with the requested and last-reported values instead of leaving a sweep waiting
 indefinitely.
 
+**Adapter > Run engineering-screen autotune** is the unattended path for the
+supplied SAA5050 test cartridge. It exhaustively scores all 357 phase/rate
+combinations using unfiltered raw reconstruction, selects the base timing from
+physical even lines, then tests all 21 odd-line corrections against physical
+odd lines and validates the combined winner. The original live settings are
+restored on cancellation or error. A successful winner remains active for
+inspection but is deliberately not saved to flash. The output directory
+contains every labeled retained frame, one modal PNG per candidate,
+`frames.csv`, `candidates.csv`, `session.json`, and `result.json`. See
+[the engineering autotune guide](../docs/engineering-autotune.md) for the
+scoring definition and log schema.
+
+The preferred AI workflow uses the separate, invisible
+`p2000t-vid2vga-lab-agent.exe`; the viewer is not required. The agent and viewer
+both support the same shared-directory **Codex lab bridge**. On a Windows
+development machine its default root is
+`D:\tmp\p2000t-codex-lab`. The repository client
+`tools/p2000t_lab.py` can query status, shut down the agent, or submit one
+acknowledged experiment at
+a time, including optional phase, rate, odd-line phase, reconstruction,
+settling-frame, and capture-frame controls. Successful experiments leave their
+live setting active so Codex can adapt from it; cancellation and errors restore
+the pre-experiment timing. Only the separate, explicit `save` command writes
+the current live tuple to Pico flash and waits for a matching stored-state
+acknowledgement. Each run saves the request, exact frames and sequences, modal
+image, spatial/temporal metrics, firmware correction counters, and result JSON. See
+[the Codex lab guide](../docs/codex-lab.md).
+
 The firmware command `c` starts the recommended PackBits stream, `r` starts a
 raw stream, and `q` returns it to the normal USB console. Streaming is currently
 compiled into the Pico 2 firmware only.
+
+## High-resolution diagnostics
+
+**Adapter > Record high-resolution diagnostics** records a lossless CSYNC
+timing trace followed by repeated 126 MHz raw RGBS bursts covering up to sixteen
+contiguous physical source lines. The viewer validates each CRC-protected record
+before appending it to `capture.p2td` and writes a CSV byte index alongside it.
+See [the diagnostic format and analysis guide](../docs/diagnostics.md).
 
 ## Windows build with MSYS2
 
@@ -70,7 +106,8 @@ self-contained development directory with the required Qt DLLs:
 
 ```sh
 mkdir -p build-gui/package
-cp build-gui/p2000t-vid2vga-capture.exe build-gui/package/
+cp build-gui/p2000t-vid2vga-capture.exe \
+  build-gui/p2000t-vid2vga-lab-agent.exe build-gui/package/
 windeployqt6 --release --no-translations \
   --exclude-plugins qpdf,qsvg,qsvgicon \
   build-gui/package/p2000t-vid2vga-capture.exe
@@ -94,7 +131,7 @@ preparing a self-contained deployment directory:
 
 ```powershell
 gui/packaging/create_windows_installer.ps1 `
-  -Stage dist/viewer -Version 0.3.0 `
+  -Stage dist/viewer -Version 0.4.0 `
   -Output dist/p2000t-vid2vga-capture-windows-setup.exe `
   -WorkDirectory installer-work
 ```

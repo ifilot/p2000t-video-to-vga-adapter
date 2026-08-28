@@ -19,6 +19,17 @@ struct PicoConfiguration {
     int oddLinePhase = P2000T_CONTROL_DEFAULT_ODD_LINE_PHASE;
     int sampleRateTrim = P2000T_CONTROL_DEFAULT_SAMPLE_RATE_TRIM;
     int sampleReconstruction = P2000T_CONTROL_DEFAULT_SAMPLE_RECONSTRUCTION;
+    int captureEngine = P2000T_CAPTURE_ENGINE_TWO_TAP;
+    int windowSamples = 1;
+    quint32 windowedFrames = 0;
+    quint32 lastCorrectedSamples = 0;
+    quint32 lastAmbiguousSamples = 0;
+    quint32 lastRedCorrections = 0;
+    quint32 lastGreenCorrections = 0;
+    quint32 lastBlueCorrections = 0;
+    quint32 lineDeadlineMisses = 0;
+    bool windowSupported = false;
+    bool engineSwitchPending = false;
     int horizontal = P2000T_CONTROL_DEFAULT_HORIZONTAL;
     int artwork = P2000T_CONTROL_DEFAULT_ARTWORK;
     std::array<quint16, P2000T_CONTROL_PALETTE_COLORS> palette = {

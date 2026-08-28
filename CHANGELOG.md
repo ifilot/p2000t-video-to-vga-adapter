@@ -2,7 +2,22 @@
 
 Notable project changes are recorded here.
 
-## Unreleased
+## 0.4.0 - 2026-08-28
+
+- Added a frame-boundary-switchable Pico 2 capture engine which records two
+  three-tick 126 MHz windows per source dot into ping-pong scanline buffers and
+  reconstructs the normal 480x240 framebuffer without another full-frame
+  allocation.
+- Added sharp guarded reconstruction plus window-center, per-channel majority,
+  atomic-early, and atomic-late policies. Pico 2 now defaults to the balanced
+  window-center timing selected across the caption and engineering test pages.
+- Extended the CRC-protected flash record to persist every reconstruction mode
+  while retaining read compatibility with v0.3.x settings records.
+- Added exact per-frame reconstruction telemetry to the USB stream and Codex
+  lab results, including corrected/ambiguous samples, RGB channel corrections,
+  active engine, and scanline-deadline failures.
+- Fixed tagged release packaging so the generated SAA5050 cartridge binary is
+  downloaded with the firmware/viewer artifacts before publishing a release.
 
 ### Added
 
@@ -29,16 +44,38 @@ Notable project changes are recorded here.
 - Automated viewer calibration sweeps over sample phase and horizontal rate
   trim, with acknowledged setting changes, configurable settling, repeated
   PNG captures, CSV/session metadata, cancellation, and settings restoration.
-- Persisted raw/second-tap SAA5050 source-dot reconstruction, applied
+- Persisted raw/guarded-second-tap SAA5050 source-dot reconstruction, applied
   frame-atomically to VGA and identically to Pico 2 USB captures, with console
   and GUI controls. The mode was selected from offline temporal analysis of a
   1,250-frame calibration sweep.
+- Guarded reconstruction now rejects a second-tap color which matches neither
+  its own first tap nor the following dot's first tap, suppressing the
+  one-clock RGB transition states measured by high-resolution diagnostics.
+- Pico 2 high-resolution diagnostic recording with a full-frame 63 MHz CSYNC
+  trace, repeated sync-triggered 126 MHz raw RGBS bursts, capture-duration
+  overrun detection, CRC-protected lossless records, viewer session recording,
+  and a reproducible analysis utility.
+- Unattended engineering-screen autotuning in the viewer. It exhaustively
+  searches phase and capture-rate trim, independently tunes physical odd-line
+  phase, validates the winner, keeps reconstruction raw to prevent blur from
+  gaming the score, and records labeled frames, modal PNGs, per-parity temporal
+  and spatial metrics, CSV logs, and a machine-readable JSON recommendation.
+- Invisible Windows Codex lab agent, shared bridge support in the viewer, and
+  a WSL command-line client.
+  Codex can directly query adapter state, apply acknowledged non-persistent
+  timing/reconstruction settings, capture and score repeated frames, inspect
+  the resulting PNG evidence, adapt subsequent experiments, or cancel and
+  restore an experiment, explicitly save a chosen tuple after acknowledgement,
+  or shut down the agent through an atomic JSON request/response directory.
 
 ### Changed
 
 - Calibration sweeps now request an explicit complete setting state, retry a
   missing acknowledgement with a bounded timeout, report mismatched values,
   and remember the last selected analysis parent directory.
+- Capture PIO and DMA are explicitly re-armed after a flash settings write so
+  windowed acquisition resumes even when line completions occurred while
+  flash-safe execution had paused interrupt service.
 - Capture-buffer ownership now permits a short-lived Pico 2 USB reader without
   exposing a buffer that DMA may overwrite or changing the Pico/RP2040 memory
   footprint.

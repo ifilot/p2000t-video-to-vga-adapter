@@ -1,0 +1,46 @@
+; SPDX-FileCopyrightText: 2026 Ivo Filot <ivo@ivofilot.nl>
+; SPDX-License-Identifier: GPL-3.0-or-later
+;
+; Pico 2 PIO2 diagnostic acquisition. The trigger state machine qualifies
+; vertical sync and counts physical horizontal sync edges. A sampler waiting
+; on IRQ 0 then records either CSYNC alone or the complete RGBS nibble.
+
+.program p2000t_diagnostic_trigger
+    pull block
+    mov y, osr                     ; requested physical line minus one
+
+find_vertical_start:
+    jmp pin vertical_candidate
+    jmp find_vertical_start
+vertical_candidate:
+    set x, 31
+vertical_measure:
+    jmp pin vertical_continue
+    jmp find_vertical_start
+vertical_continue:
+    jmp x-- vertical_measure [23]  ; active for at least 6.35 us
+vertical_end:
+    jmp pin vertical_end
+
+    mov x, y
+line_wait_idle:
+    jmp pin line_wait_idle
+line_wait_active:
+    jmp pin line_got_edge
+    jmp line_wait_active
+line_got_edge:
+    jmp x-- line_wait_idle
+    irq 0                          ; releases exactly one waiting sampler
+    irq 1                          ; timestamps the trigger on the CPU
+
+.program p2000t_diagnostic_timing_sampler
+    wait 1 irq 0
+.wrap_target
+    in pins, 1                    ; 63 MHz CSYNC bitstream
+.wrap
+
+.program p2000t_diagnostic_rgbs_sampler
+    wait 1 irq 0
+.wrap_target
+    in pins, 4                    ; 126 MHz conditioned RGBS nibbles
+.wrap

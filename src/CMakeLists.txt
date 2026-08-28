@@ -43,6 +43,7 @@ add_executable(${FIRMWARE_TARGET}
 # large snapshot and TinyUSB FIFO out of the Pico build preserves RP2040 SRAM.
 if(PICO_BOARD STREQUAL "pico2")
     target_sources(${FIRMWARE_TARGET} PRIVATE
+        p2000t_diagnostics.c
         p2000t_usb_stream.c
     )
 endif()
@@ -58,6 +59,15 @@ set_target_properties(${FIRMWARE_TARGET} PROPERTIES
 pico_generate_pio_header(${FIRMWARE_TARGET}
     ${CMAKE_CURRENT_LIST_DIR}/p2000t_capture.pio
 )
+
+if(PICO_BOARD STREQUAL "pico2")
+    pico_generate_pio_header(${FIRMWARE_TARGET}
+        ${CMAKE_CURRENT_LIST_DIR}/p2000t_diagnostics.pio
+    )
+    pico_generate_pio_header(${FIRMWARE_TARGET}
+        ${CMAKE_CURRENT_LIST_DIR}/p2000t_window_capture.pio
+    )
+endif()
 
 target_link_libraries(${FIRMWARE_TARGET} PRIVATE
     pico_stdlib
@@ -119,6 +129,7 @@ set_source_files_properties(
 
 if(PICO_BOARD STREQUAL "pico2")
     set_source_files_properties(
+        p2000t_diagnostics.c
         p2000t_usb_stream.c
         PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra;-Wpedantic"
     )

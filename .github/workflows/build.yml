@@ -96,7 +96,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist/viewer
-          cp build-gui/p2000t-vid2vga-capture.exe dist/viewer/
+          cp build-gui/p2000t-vid2vga-capture.exe \
+            build-gui/p2000t-vid2vga-lab-agent.exe dist/viewer/
           windeployqt6 --release --no-translations \
             --exclude-plugins qpdf,qsvg,qsvgicon \
             dist/viewer/p2000t-vid2vga-capture.exe
@@ -117,8 +118,14 @@ jobs:
           $version = (Get-Content build-gui/package-version.txt -Raw).Trim()
           $archive = "dist/p2000t-vid2vga-capture-windows.zip"
           Compress-Archive -Path dist/viewer/* -DestinationPath $archive
-          if (-not (Test-Path $archive -PathType Leaf)) {
-            throw "Windows portable package was not created: $archive"
+          foreach ($required in @(
+            $archive,
+            "dist/viewer/p2000t-vid2vga-capture.exe",
+            "dist/viewer/p2000t-vid2vga-lab-agent.exe"
+          )) {
+            if (-not (Test-Path $required -PathType Leaf)) {
+              throw "Windows package payload is missing: $required"
+            }
           }
 
           $installer = "dist/p2000t-vid2vga-capture-windows-setup.exe"
@@ -207,9 +214,23 @@ jobs:
       - name: Download release artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: p2000t-vid2vga-*
+          pattern: p2000t-*
           path: dist
           merge-multiple: true
+
+      - name: Verify release payload
+        run: |
+          for artifact in \
+            p2000t-vid2vga-pico.uf2 \
+            p2000t-vid2vga-pico2.uf2 \
+            p2000t-screentest.bin \
+            p2000t-vid2vga-capture-windows.zip \
+            p2000t-vid2vga-capture-windows-setup.exe; do
+            test -s "dist/${artifact}" || {
+              echo "Missing release artifact: dist/${artifact}" >&2
+              exit 1
+            }
+          done
 
       - name: Publish tagged release
         env:

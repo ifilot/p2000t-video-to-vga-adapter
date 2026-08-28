@@ -27,8 +27,9 @@ Hardware and firmware for converting the Philips P2000T RGBS output to
 - On-board LED breathing while seeking and blinking during valid capture
 - USB serial controls and capture statistics
 - Pico 2 USB screen streaming at a target 25 FPS with a Qt 6 viewer
-- Selectable raw or second-tap source-dot reconstruction for suppressing
-  temporal disagreement between the two samples of each 6 MHz SAA5050 dot
+- Selectable raw, legacy guarded, sharp guarded, and Pico 2 three-sample
+  126 MHz window reconstruction modes for studying transition instability
+- CRC-protected persistence for every Pico 2 reconstruction mode
 
 ## Building
 
@@ -62,18 +63,23 @@ Connect to the Pico USB serial port and press `h` for help. Useful commands are
 `s` for status, `[`/`]` for vertical position, `,`/`.` for sample phase, and
 `;`/`'` for the odd-line phase correction. Use `{`/`}` to make the complete
 captured line narrower or wider and `w` to reset that rate trim. `<`/`>` moves
-the horizontal start, `d` toggles raw/second-tap source-dot reconstruction,
+the horizontal start, `d` toggles raw/guarded-second-tap reconstruction,
 while `1`, `2`, or `3` selects the no-connection artwork.
 Each phase tick is nominally 7.94 ns. Each rate step changes the PIO divider by
 1/256 and moves the right edge by approximately 0.94 captured pixel while
 leaving the sync-anchored left edge in place. Positive odd-line phase samples
-odd physical source lines later; positive rate trim widens every line. Zero is
-the default for both corrections.
+odd physical source lines later; positive rate trim widens every line. Pico 2
+factory defaults use the balanced `window-center` reconstruction with phase
+`-1`, odd-line correction `+1`, and rate trim `0`; the original Pico retains
+raw reconstruction with phase-zero defaults.
 
 Raw reconstruction exposes both 12 MHz samples in every nominal 6 MHz
-SAA5050 source dot. Second-tap reconstruction uses the later sample for both
-corresponding VGA pixels. The latter is useful when raw taps disagree over
-time and can be selected live or persisted like the other capture settings.
+SAA5050 source dot. Guarded-second-tap reconstruction uses the later sample
+for both corresponding VGA pixels unless it matches neither the first tap nor
+the following dot's first tap; that isolated intermediate color is replaced
+by the current dot's first tap. All reconstruction modes can be selected live
+and saved in the v0.4.0 flash record. Existing v0.3.x saved settings are
+migrated when next saved.
 
 For a measured source period near 20092 us, start with rate trim `+2`. The
 left-edge compensation allows the existing sample phase to remain unchanged;
@@ -99,11 +105,16 @@ the VGA output.
 
 Use **Adapter > Configure Pico 2** to adjust alignment, the independent
 odd-line phase correction, and the horizontal sampling-rate trim; choose the
-raw or second-tap source-dot reconstruction; choose the no-connection artwork;
+two-tap or 126 MHz window reconstruction; choose the no-connection artwork;
 and tune all eight colors. Changes take effect
 immediately, which makes calibration easy.
 Settings can be restored, reset to their defaults, or saved to the Pico 2 for
 the next power-on.
+
+For capture-quality investigation, **Adapter > Record high-resolution
+diagnostics** saves a full-frame 63 MHz CSYNC trace and repeated, sync-triggered
+126 MHz raw RGBS bursts without reconstruction or palette conversion. See the
+[diagnostic recording and analysis guide](docs/diagnostics.md).
 
 For intermittent edge artifacts, **Adapter > Capture calibration sweep**
 automatically tests an inclusive sample-phase x horizontal-rate range against
@@ -113,6 +124,26 @@ the setting and source-frame sequence in a CSV manifest inside a timestamped
 analysis directory. The odd-line correction remains fixed at its current
 value, and the original live settings are restored after completion or
 cancellation.
+
+For unattended optimization, display the supplied SAA5050 screen-test
+cartridge and choose **Adapter > Run engineering-screen autotune**. The viewer
+forces sharp raw reconstruction, evaluates every phase/rate-trim pair, then
+tunes the physical odd lines independently and validates the winner over a
+longer run. It applies the result live without writing flash. Every retained
+frame, modal candidate image, odd/even instability measurement, one-dot color
+transient count, and selection decision is written to a timestamped analysis
+directory. See the [engineering autotune guide](docs/engineering-autotune.md).
+
+For AI-directed investigation, the invisible **Codex lab agent** owns the
+Windows Pico connection without opening the viewer. Codex can query live state,
+apply non-persistent sampling settings, explicitly persist a chosen tuple,
+request settled multi-frame captures, receive modal/instability
+metrics, inspect the PNGs, and adapt the next experiment without a person
+operating a GUI. The Windows agent and WSL client exchange
+atomic JSON files through `D:\tmp\p2000t-codex-lab`; see the
+[Codex lab guide](docs/codex-lab.md).
+The [windowed reconstruction design](docs/windowed-reconstruction.md) explains
+the six-tap PIO path and its per-frame evidence counters.
 
 Download either the installer or portable ZIP from [Downloads](#downloads).
 The installer adds the viewer to the Start menu and includes an uninstaller.

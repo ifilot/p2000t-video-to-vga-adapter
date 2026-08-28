@@ -36,8 +36,8 @@ void p2000t_usb_stream_start(bool allow_packbits);
 void p2000t_usb_stream_stop(void);
 /** Return whether binary screen mode is active. */
 bool p2000t_usb_stream_active(void);
-/** Select whether USB frames duplicate each source dot's second raw tap. */
-void p2000t_usb_stream_set_second_tap_reconstruction(bool enabled);
+/** Select the live reconstruction represented in streamed frames. */
+void p2000t_usb_stream_set_reconstruction(unsigned reconstruction);
 /**
  * @brief Refill TinyUSB without ever waiting for host-side capacity.
  *

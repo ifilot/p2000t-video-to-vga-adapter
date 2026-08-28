@@ -17,6 +17,7 @@
 #include "p2000t_capture.h"
 #include "p2000t_control_protocol.h"
 #include "p2000t_packbits.h"
+#include "p2000t_reconstruction.h"
 #include "p2000t_stream_protocol.h"
 #include "pico/stdio_usb.h"
 #include "pico/stdlib.h"
@@ -49,7 +50,7 @@ static uint8_t packbits_staging[STREAM_PACKBITS_STAGING_SIZE];
 
 static bool stream_active;
 static bool packbits_allowed;
-static bool second_tap_reconstruction;
+static unsigned reconstruction_mode;
 static bool tx_active;
 static bool tx_packbits;
 static bool tx_configuration;
@@ -73,6 +74,7 @@ static size_t packbits_staging_offset;
 static uint32_t tx_encode_us;
 static uint64_t tx_started_us;
 static p2000t_usb_stream_stats_t stream_stats;
+static p2000t_reconstruction_diagnostics_t tx_reconstruction_diagnostics;
 
 static void store_u16(uint8_t *destination, uint16_t value) {
     destination[0] = (uint8_t)value;
@@ -104,7 +106,22 @@ static uint32_t frame_crc32(const uint8_t *data, size_t length) {
 }
 
 /** Convert active-low RGBS nibbles into R, G, and B one-bit planes. */
-static void pack_rgb111_frame(const uint32_t *capture) {
+static void
+count_changed_channels(uint8_t original, uint8_t output,
+                       p2000t_reconstruction_diagnostics_t *diagnostics) {
+    const uint8_t changed = original ^ output;
+    if (changed == 0u) {
+        return;
+    }
+    ++diagnostics->corrected_samples;
+    diagnostics->red_corrections += (changed >> P2000T_RED_CHANNEL) & 1u;
+    diagnostics->green_corrections += (changed >> P2000T_GREEN_CHANNEL) & 1u;
+    diagnostics->blue_corrections += (changed >> P2000T_BLUE_CHANNEL) & 1u;
+}
+
+static void
+pack_rgb111_frame(const uint32_t *capture,
+                  p2000t_reconstruction_diagnostics_t *diagnostics) {
     uint8_t *const red_plane = stream_frame;
     uint8_t *const green_plane = stream_frame + P2000T_STREAM_PLANE_SIZE;
     uint8_t *const blue_plane = stream_frame + 2u * P2000T_STREAM_PLANE_SIZE;
@@ -115,14 +132,45 @@ static void pack_rgb111_frame(const uint32_t *capture) {
         for (unsigned word_index = 0;
              word_index < P2000T_CAPTURE_WORDS_PER_LINE; ++word_index) {
             const uint32_t raw_word = source[word_index];
+            const bool has_next_word =
+                word_index + 1u < P2000T_CAPTURE_WORDS_PER_LINE;
+            const uint32_t next_word =
+                has_next_word ? source[word_index + 1u] : 0u;
             uint8_t red = 0u;
             uint8_t green = 0u;
             uint8_t blue = 0u;
             for (unsigned pixel = 0; pixel < 8u; ++pixel) {
-                const unsigned source_pixel =
-                    second_tap_reconstruction ? (pixel | 1u) : pixel;
-                const unsigned shift = 28u - source_pixel * 4u;
-                const uint8_t raw = (uint8_t)(raw_word >> shift) & 0x0fu;
+                const unsigned shift = 28u - pixel * 4u;
+                const uint8_t original = (uint8_t)(raw_word >> shift) & 0x0fu;
+                uint8_t raw = original;
+                if (diagnostics->capture_engine ==
+                    P2000T_CAPTURE_ENGINE_TWO_TAP) {
+                    const unsigned dot = pixel / 2u;
+                    const uint8_t selected = p2000t_guarded_tap_from_words(
+                        raw_word, next_word, dot, has_next_word);
+                    if ((pixel & 1u) == 0u) {
+                        const uint8_t first =
+                            p2000t_packed_sample(raw_word, dot * 2u);
+                        const uint8_t second =
+                            p2000t_packed_sample(raw_word, dot * 2u + 1u);
+                        if (selected != second) {
+                            ++diagnostics->ambiguous_samples;
+                        }
+                        if (reconstruction_mode ==
+                            P2000T_CONTROL_SAMPLE_RECONSTRUCTION_SECOND_TAP) {
+                            raw = selected;
+                        } else {
+                            raw = first;
+                        }
+                    } else if (reconstruction_mode !=
+                               P2000T_CONTROL_SAMPLE_RECONSTRUCTION_RAW) {
+                        raw = selected;
+                    }
+                    if (reconstruction_mode !=
+                        P2000T_CONTROL_SAMPLE_RECONSTRUCTION_RAW) {
+                        count_changed_channels(original, raw, diagnostics);
+                    }
+                }
                 red = (uint8_t)((red << 1u) |
                                 ((((raw >> P2000T_RED_CHANNEL) & 1u) == 0u)
                                      ? 1u
@@ -170,6 +218,9 @@ static void build_header(uint32_t sequence, uint32_t checksum) {
     if (tx_signal_present) {
         flags |= P2000T_STREAM_FLAG_SIGNAL_PRESENT;
     }
+    if (tx_reconstruction_diagnostics.line_deadline_misses != 0u) {
+        flags |= P2000T_STREAM_FLAG_CAPTURE_DEADLINE_MISS;
+    }
     store_u16(&stream_header[6], flags);
     store_u32(&stream_header[8], sequence);
     const uint32_t timing = (stream_stats.last_prepare_us > UINT16_MAX
@@ -190,6 +241,22 @@ static void build_header(uint32_t sequence, uint32_t checksum) {
               tx_signal_present ? P2000T_STREAM_PAYLOAD_SIZE : 0u);
     store_u32(&stream_header[36], 25000u);
     stream_header[P2000T_STREAM_ARTWORK_OFFSET] = tx_no_signal_artwork;
+    stream_header[P2000T_STREAM_RECONSTRUCTION_OFFSET] =
+        tx_reconstruction_diagnostics.reconstruction_mode;
+    stream_header[P2000T_STREAM_CAPTURE_ENGINE_OFFSET] =
+        tx_reconstruction_diagnostics.capture_engine;
+    stream_header[P2000T_STREAM_SAMPLES_PER_OUTPUT_OFFSET] =
+        tx_reconstruction_diagnostics.samples_per_output;
+    store_u32(&stream_header[P2000T_STREAM_CORRECTED_SAMPLES_OFFSET],
+              tx_reconstruction_diagnostics.corrected_samples);
+    store_u32(&stream_header[P2000T_STREAM_AMBIGUOUS_SAMPLES_OFFSET],
+              tx_reconstruction_diagnostics.ambiguous_samples);
+    store_u32(&stream_header[P2000T_STREAM_RED_CORRECTIONS_OFFSET],
+              tx_reconstruction_diagnostics.red_corrections);
+    store_u32(&stream_header[P2000T_STREAM_GREEN_CORRECTIONS_OFFSET],
+              tx_reconstruction_diagnostics.green_corrections);
+    store_u32(&stream_header[P2000T_STREAM_BLUE_CORRECTIONS_OFFSET],
+              tx_reconstruction_diagnostics.blue_corrections);
 }
 
 static void begin_no_signal_record(unsigned no_signal_artwork) {
@@ -206,6 +273,11 @@ static void begin_no_signal_record(unsigned no_signal_artwork) {
     packbits_staging_offset = 0u;
     tx_encode_us = 0u;
     stream_stats.last_prepare_us = 0u;
+    tx_reconstruction_diagnostics = (p2000t_reconstruction_diagnostics_t){
+        .reconstruction_mode = (uint8_t)reconstruction_mode,
+        .capture_engine = P2000T_CAPTURE_ENGINE_TWO_TAP,
+        .samples_per_output = 1u,
+    };
     build_header(tx_sequence, 0u);
     tx_started_us = time_us_64();
     tx_active = true;
@@ -267,8 +339,19 @@ static void begin_available_frame(bool signal_present,
     }
 
     const uint64_t prepare_started = time_us_64();
-    pack_rgb111_frame(p2000t_capture_buffer((unsigned)buffer_index));
+    p2000t_reconstruction_diagnostics_t diagnostics;
+    p2000t_capture_get_frame_diagnostics((unsigned)buffer_index, &diagnostics);
+    if (diagnostics.capture_engine == P2000T_CAPTURE_ENGINE_TWO_TAP) {
+        diagnostics = (p2000t_reconstruction_diagnostics_t){
+            .reconstruction_mode = (uint8_t)reconstruction_mode,
+            .capture_engine = P2000T_CAPTURE_ENGINE_TWO_TAP,
+            .samples_per_output = 1u,
+        };
+    }
+    pack_rgb111_frame(p2000t_capture_buffer((unsigned)buffer_index),
+                      &diagnostics);
     p2000t_capture_release_frame_from_usb((unsigned)buffer_index);
+    tx_reconstruction_diagnostics = diagnostics;
 
     const size_t encoded_size =
         packbits_allowed ? p2000t_packbits_encoded_size(
@@ -346,8 +429,9 @@ bool p2000t_usb_stream_active(void) {
     return stream_active;
 }
 
-void p2000t_usb_stream_set_second_tap_reconstruction(bool enabled) {
-    second_tap_reconstruction = enabled;
+void p2000t_usb_stream_set_reconstruction(unsigned reconstruction) {
+    hard_assert(reconstruction < P2000T_CONTROL_SAMPLE_RECONSTRUCTION_COUNT);
+    reconstruction_mode = reconstruction;
 }
 
 void p2000t_usb_stream_service(bool signal_present,

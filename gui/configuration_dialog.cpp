@@ -66,12 +66,28 @@ ConfigurationDialog::ConfigurationDialog(const PicoConfiguration &configuration,
     sample_reconstruction_->addItem(QStringLiteral("Raw two taps (legacy)"),
                                     P2000T_CONTROL_SAMPLE_RECONSTRUCTION_RAW);
     sample_reconstruction_->addItem(
-        QStringLiteral("Duplicate second tap (stable)"),
+        QStringLiteral("Guarded second tap (stable)"),
         P2000T_CONTROL_SAMPLE_RECONSTRUCTION_SECOND_TAP);
+    sample_reconstruction_->addItem(
+        QStringLiteral("Sharp guarded taps"),
+        P2000T_CONTROL_SAMPLE_RECONSTRUCTION_SHARP_GUARDED);
+    sample_reconstruction_->addItem(
+        QStringLiteral("126 MHz windows: center"),
+        P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_CENTER);
+    sample_reconstruction_->addItem(
+        QStringLiteral("126 MHz windows: channel majority"),
+        P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_CHANNEL_MAJORITY);
+    sample_reconstruction_->addItem(
+        QStringLiteral("126 MHz windows: atomic early endpoint"),
+        P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_COLOR_EARLY);
+    sample_reconstruction_->addItem(
+        QStringLiteral("126 MHz windows: atomic late endpoint"),
+        P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_COLOR_LATE);
     sample_reconstruction_->setToolTip(QStringLiteral(
         "The SAA5050 emits 240 nominal source dots. Stable reconstruction "
-        "uses the later of each pair of 12 MHz samples for both corresponding "
-        "VGA pixels; raw mode preserves both samples independently."));
+        "offers the legacy duplicate filter, a sharp two-tap filter, and Pico "
+        "2 three-sample 126 MHz windows. All Pico 2 reconstruction modes can "
+        "be saved to flash."));
     horizontal_ = new QSpinBox(capture);
     horizontal_->setRange(
         P2000T_CONTROL_MIN_HORIZONTAL / P2000T_CONTROL_HORIZONTAL_STEP,

@@ -15,7 +15,9 @@
 #include <string.h>
 
 #include "p2000t_capture.h"
+#include "p2000t_control_protocol.h"
 #include "p2000t_no_signal_layout.h"
+#include "p2000t_reconstruction.h"
 #include "pico/scanvideo/composable_scanline.h"
 #include "pico/stdlib.h"
 
@@ -60,8 +62,8 @@ static const uint16_t default_source_colors[8] = {
 static uint32_t raw_byte_color_tables[3][SOURCE_RECONSTRUCTION_MODES][256];
 static volatile uint32_t requested_raw_color_table;
 static volatile uint32_t active_raw_color_table;
-static volatile uint32_t requested_second_tap_reconstruction;
-static volatile uint32_t active_second_tap_reconstruction;
+static volatile uint32_t requested_reconstruction;
+static volatile uint32_t active_reconstruction;
 
 /** Two RGB444 pixels for each packed pair in each artwork palette. */
 static uint32_t no_signal_byte_colors[P2000T_NO_SIGNAL_ARTWORK_COUNT][256];
@@ -237,8 +239,8 @@ void p2000t_video_renderer_initialize(void) {
     build_source_color_tables(raw_byte_color_tables[0], default_source_colors);
     requested_raw_color_table = 0u;
     active_raw_color_table = 0u;
-    requested_second_tap_reconstruction = 0u;
-    active_second_tap_reconstruction = 0u;
+    requested_reconstruction = P2000T_CONTROL_SAMPLE_RECONSTRUCTION_RAW;
+    active_reconstruction = P2000T_CONTROL_SAMPLE_RECONSTRUCTION_RAW;
 
     /* Expand all three tiny flash-resident palettes into SRAM. Selection can
      * then change at a frame boundary without rebuilding a table or adding
@@ -270,8 +272,9 @@ void p2000t_video_renderer_set_source_palette(const uint16_t colors[8]) {
     __atomic_store_n(&requested_raw_color_table, next, __ATOMIC_RELEASE);
 }
 
-void p2000t_video_renderer_set_second_tap_reconstruction(bool enabled) {
-    __atomic_store_n(&requested_second_tap_reconstruction, enabled ? 1u : 0u,
+void p2000t_video_renderer_set_reconstruction(unsigned reconstruction) {
+    hard_assert(reconstruction < P2000T_CONTROL_SAMPLE_RECONSTRUCTION_COUNT);
+    __atomic_store_n(&requested_reconstruction, reconstruction,
                      __ATOMIC_RELEASE);
 }
 
@@ -280,9 +283,8 @@ void p2000t_video_renderer_begin_frame(void) {
         __atomic_load_n(&requested_raw_color_table, __ATOMIC_ACQUIRE);
     __atomic_store_n(&active_raw_color_table, requested, __ATOMIC_RELEASE);
     const uint32_t reconstruction =
-        __atomic_load_n(&requested_second_tap_reconstruction, __ATOMIC_ACQUIRE);
-    __atomic_store_n(&active_second_tap_reconstruction, reconstruction,
-                     __ATOMIC_RELEASE);
+        __atomic_load_n(&requested_reconstruction, __ATOMIC_ACQUIRE);
+    __atomic_store_n(&active_reconstruction, reconstruction, __ATOMIC_RELEASE);
 }
 
 void __not_in_flash_func(p2000t_video_render_no_signal_scanline)(
@@ -344,18 +346,48 @@ void __not_in_flash_func(p2000t_video_render_source_scanline)(
         *destination++ = 0x0000;
     }
     const uint32_t *source = frame + source_y * P2000T_CAPTURE_WORDS_PER_LINE;
-    const uint32_t *raw_byte_colors = raw_byte_color_tables
-        [__atomic_load_n(&active_raw_color_table, __ATOMIC_RELAXED)]
-        [__atomic_load_n(&active_second_tap_reconstruction, __ATOMIC_RELAXED)];
+    const uint32_t active_table =
+        __atomic_load_n(&active_raw_color_table, __ATOMIC_RELAXED);
+    const unsigned reconstruction =
+        __atomic_load_n(&active_reconstruction, __ATOMIC_RELAXED);
     hard_assert(((uintptr_t)destination & 3u) == 0u);
     uint32_t *packed_destination = (uint32_t *)destination;
-    for (unsigned word_index = 0; word_index < P2000T_CAPTURE_WORDS_PER_LINE;
-         ++word_index) {
-        const uint32_t raw = source[word_index];
-        *packed_destination++ = raw_byte_colors[(uint8_t)(raw >> 24u)];
-        *packed_destination++ = raw_byte_colors[(uint8_t)(raw >> 16u)];
-        *packed_destination++ = raw_byte_colors[(uint8_t)(raw >> 8u)];
-        *packed_destination++ = raw_byte_colors[(uint8_t)raw];
+    if (reconstruction == P2000T_CONTROL_SAMPLE_RECONSTRUCTION_RAW ||
+        reconstruction >= P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_FIRST) {
+        const uint32_t *raw_byte_colors =
+            raw_byte_color_tables[active_table][0];
+        for (unsigned word_index = 0;
+             word_index < P2000T_CAPTURE_WORDS_PER_LINE; ++word_index) {
+            const uint32_t raw = source[word_index];
+            *packed_destination++ = raw_byte_colors[(uint8_t)(raw >> 24u)];
+            *packed_destination++ = raw_byte_colors[(uint8_t)(raw >> 16u)];
+            *packed_destination++ = raw_byte_colors[(uint8_t)(raw >> 8u)];
+            *packed_destination++ = raw_byte_colors[(uint8_t)raw];
+        }
+    } else {
+        const uint32_t *duplicate_colors =
+            raw_byte_color_tables[active_table][1];
+        const uint32_t *raw_pair_colors =
+            raw_byte_color_tables[active_table][0];
+        for (unsigned word_index = 0;
+             word_index < P2000T_CAPTURE_WORDS_PER_LINE; ++word_index) {
+            const uint32_t raw = source[word_index];
+            const bool has_next_word =
+                word_index + 1u < P2000T_CAPTURE_WORDS_PER_LINE;
+            const uint32_t next = has_next_word ? source[word_index + 1u] : 0u;
+            for (unsigned dot = 0; dot < 4u; ++dot) {
+                const uint8_t selected = p2000t_guarded_tap_from_words(
+                    raw, next, dot, has_next_word);
+                if (reconstruction ==
+                    P2000T_CONTROL_SAMPLE_RECONSTRUCTION_SECOND_TAP) {
+                    *packed_destination++ = duplicate_colors[selected];
+                } else {
+                    const uint8_t first = p2000t_packed_sample(raw, dot * 2u);
+                    *packed_destination++ =
+                        raw_pair_colors[(first << 4u) | selected];
+                }
+            }
+        }
     }
     destination = (uint16_t *)packed_destination;
     for (unsigned x = 0; x < VGA_RIGHT_MARGIN; ++x) {
