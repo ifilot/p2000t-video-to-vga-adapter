@@ -13,6 +13,7 @@ Hardware and firmware for converting the Philips P2000T RGBS output to
 
 - [Latest Pico firmware](https://github.com/ifilot/p2000t-video-to-vga-adapter/releases/latest/download/p2000t-vid2vga-pico.uf2)
 - [Latest Pico 2 firmware](https://github.com/ifilot/p2000t-video-to-vga-adapter/releases/latest/download/p2000t-vid2vga-pico2.uf2)
+- [SAA5050 screen-test cartridge](https://github.com/ifilot/p2000t-video-to-vga-adapter/releases/latest/download/p2000t-screentest.bin)
 - [Latest Windows capture viewer installer](https://github.com/ifilot/p2000t-video-to-vga-adapter/releases/latest/download/p2000t-vid2vga-capture-windows-setup.exe)
 - [Latest portable Windows capture viewer](https://github.com/ifilot/p2000t-video-to-vga-adapter/releases/latest/download/p2000t-vid2vga-capture-windows.zip)
 
@@ -26,6 +27,8 @@ Hardware and firmware for converting the Philips P2000T RGBS output to
 - On-board LED breathing while seeking and blinking during valid capture
 - USB serial controls and capture statistics
 - Pico 2 USB screen streaming at a target 25 FPS with a Qt 6 viewer
+- Selectable raw or second-tap source-dot reconstruction for suppressing
+  temporal disagreement between the two samples of each 6 MHz SAA5050 dot
 
 ## Building
 
@@ -57,8 +60,25 @@ cmake --build cmake-build-pico2 --parallel
 
 Connect to the Pico USB serial port and press `h` for help. Useful commands are
 `s` for status, `[`/`]` for vertical position, `,`/`.` for sample phase, and
-`<`/`>` for horizontal position. Use `1`, `2`, or `3` to select the
-no-connection artwork. Phase 0 is the default.
+`;`/`'` for the odd-line phase correction. Use `{`/`}` to make the complete
+captured line narrower or wider and `w` to reset that rate trim. `<`/`>` moves
+the horizontal start, `d` toggles raw/second-tap source-dot reconstruction,
+while `1`, `2`, or `3` selects the no-connection artwork.
+Each phase tick is nominally 7.94 ns. Each rate step changes the PIO divider by
+1/256 and moves the right edge by approximately 0.94 captured pixel while
+leaving the sync-anchored left edge in place. Positive odd-line phase samples
+odd physical source lines later; positive rate trim widens every line. Zero is
+the default for both corrections.
+
+Raw reconstruction exposes both 12 MHz samples in every nominal 6 MHz
+SAA5050 source dot. Second-tap reconstruction uses the later sample for both
+corresponding VGA pixels. The latter is useful when raw taps disagree over
+time and can be selected live or persisted like the other capture settings.
+
+For a measured source period near 20092 us, start with rate trim `+2`. The
+left-edge compensation allows the existing sample phase to remain unchanged;
+compare both edges and also try `+1` because one divider step is necessarily
+coarser than the calculated ideal correction.
 
 On Pico 2, `c` starts the recommended continuous PackBits screen stream and
 `r` starts an uncompressed stream. Press `q` or Escape to stop binary mode and
@@ -77,10 +97,22 @@ as PNG files. It connects to the first detected Pico 2 automatically. When no
 P2000T signal is present, it displays the same selected no-connection screen as
 the VGA output.
 
-Use **Adapter > Configure Pico 2** to adjust alignment, choose the
-no-connection artwork, and tune all eight colors. Changes take effect
-immediately, which makes calibration easy. Settings can be restored, reset to
-their defaults, or saved to the Pico 2 for the next power-on.
+Use **Adapter > Configure Pico 2** to adjust alignment, the independent
+odd-line phase correction, and the horizontal sampling-rate trim; choose the
+raw or second-tap source-dot reconstruction; choose the no-connection artwork;
+and tune all eight colors. Changes take effect
+immediately, which makes calibration easy.
+Settings can be restored, reset to their defaults, or saved to the Pico 2 for
+the next power-on.
+
+For intermittent edge artifacts, **Adapter > Capture calibration sweep**
+automatically tests an inclusive sample-phase x horizontal-rate range against
+a static source screen. It waits a configurable number of frames after every
+acknowledged change, saves multiple consecutive PNGs per setting, and records
+the setting and source-frame sequence in a CSV manifest inside a timestamped
+analysis directory. The odd-line correction remains fixed at its current
+value, and the original live settings are restored after completion or
+cancellation.
 
 Download either the installer or portable ZIP from [Downloads](#downloads).
 The installer adds the viewer to the Start menu and includes an uninstaller.

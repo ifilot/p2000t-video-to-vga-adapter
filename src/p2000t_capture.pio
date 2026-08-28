@@ -10,17 +10,19 @@
 ;   Conditioned CSYNC is active high; conditioned RGB is active low.
 ;
 ; Clock and packing contract:
-;   The state machine runs at 126 MHz from the 252 MHz RP2040 clock divided by
-;   two. Each nominal 6 MHz source dot occupies 21 PIO cycles. The sample loop
-;   takes two samples in those 21 cycles, alternating 10- and 11-cycle sample
-;   intervals. Eight chronological four-bit samples auto-push one DMA word.
-;   No pixel reconstruction or majority vote is performed.
+;   The state machine runs nominally at 126 MHz from the 252 MHz system clock
+;   divided by two. A signed fractional-divider trim can slightly change that
+;   rate to match the source oscillator. Each source dot occupies 21 PIO
+;   cycles. The sample loop takes two samples in those 21 cycles, alternating
+;   10- and 11-cycle intervals at the PIO rate. Eight chronological four-bit
+;   samples auto-push one DMA word. No reconstruction or vote is performed.
 ;
 ; TX command contract for each frame:
 ;   1. 239: capture 240 visible lines using the Y decrementing loop.
 ;   2. first visible scanline minus one.
-;   3. For each visible line: horizontal start delay, then 239 as the loop
-;      count for 240 source dots and therefore 480 raw samples.
+;   3. For each visible line: horizontal start delay including any odd-line
+;      correction, then 239 as the loop count for 240 source dots and
+;      therefore 480 raw samples.
 
 .program p2000t_capture
 

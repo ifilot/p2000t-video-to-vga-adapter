@@ -62,8 +62,12 @@ bool decodePicoConfiguration(const QByteArray &payload,
         payload.size() != P2000T_CONFIGURATION_STATE_SIZE ||
         std::memcmp(payload.constData(), P2000T_CONFIGURATION_STATE_MAGIC,
                     4u) != 0 ||
-        static_cast<quint8>(payload[4]) != P2000T_CONFIGURATION_STATE_VERSION ||
         loadU16(&payload.constData()[6]) != P2000T_CONFIGURATION_STATE_SIZE) {
+        return false;
+    }
+    const quint8 version = static_cast<quint8>(payload[4]);
+    if (version < P2000T_CONFIGURATION_STATE_LEGACY_VERSION ||
+        version > P2000T_CONFIGURATION_STATE_VERSION) {
         return false;
     }
     PicoConfiguration result;
@@ -76,7 +80,28 @@ bool decodePicoConfiguration(const QByteArray &payload,
     result.vertical = loadU16(&payload.constData()[8]);
     result.phase = static_cast<qint16>(loadU16(&payload.constData()[10]));
     result.horizontal = loadU16(&payload.constData()[12]);
-    result.artwork = static_cast<quint8>(payload[14]);
+    const quint8 captureOptions = static_cast<quint8>(
+        payload[P2000T_CONFIGURATION_CAPTURE_OPTIONS_OFFSET]);
+    result.artwork = captureOptions & P2000T_CONFIGURATION_ARTWORK_MASK;
+    if (version >= P2000T_CONFIGURATION_STATE_ODD_LINE_PHASE_VERSION) {
+        result.oddLinePhase = static_cast<qint8>(static_cast<quint8>(
+            payload[P2000T_CONFIGURATION_ODD_LINE_PHASE_OFFSET]));
+    }
+    if (version >= P2000T_CONFIGURATION_STATE_RATE_TRIM_VERSION) {
+        const int encoded =
+            (captureOptions >> P2000T_CONFIGURATION_RATE_TRIM_SHIFT) &
+            P2000T_CONFIGURATION_RATE_TRIM_VALUE_MASK;
+        result.sampleRateTrim = (encoded & 0x10) != 0 ? encoded - 32 : encoded;
+    }
+    if (version >= P2000T_CONFIGURATION_STATE_VERSION) {
+        result.sampleReconstruction =
+            (captureOptions &
+             P2000T_CONFIGURATION_SAMPLE_RECONSTRUCTION_MASK) >>
+            P2000T_CONFIGURATION_SAMPLE_RECONSTRUCTION_SHIFT;
+    } else if ((captureOptions &
+                P2000T_CONFIGURATION_SAMPLE_RECONSTRUCTION_MASK) != 0u) {
+        return false;
+    }
     for (int index = 0; index < P2000T_CONTROL_PALETTE_COLORS; ++index) {
         result.palette[static_cast<size_t>(index)] = loadU16(
             &payload
@@ -86,6 +111,14 @@ bool decodePicoConfiguration(const QByteArray &payload,
         result.vertical > P2000T_CONTROL_MAX_VERTICAL ||
         result.phase < P2000T_CONTROL_MIN_PHASE ||
         result.phase > P2000T_CONTROL_MAX_PHASE ||
+        result.oddLinePhase < P2000T_CONTROL_MIN_ODD_LINE_PHASE ||
+        result.oddLinePhase > P2000T_CONTROL_MAX_ODD_LINE_PHASE ||
+        result.sampleRateTrim < P2000T_CONTROL_MIN_SAMPLE_RATE_TRIM ||
+        result.sampleRateTrim > P2000T_CONTROL_MAX_SAMPLE_RATE_TRIM ||
+        result.sampleReconstruction <
+            P2000T_CONTROL_SAMPLE_RECONSTRUCTION_RAW ||
+        result.sampleReconstruction >=
+            P2000T_CONTROL_SAMPLE_RECONSTRUCTION_COUNT ||
         result.horizontal < P2000T_CONTROL_MIN_HORIZONTAL ||
         result.horizontal > P2000T_CONTROL_MAX_HORIZONTAL ||
         result.horizontal % P2000T_CONTROL_HORIZONTAL_STEP != 0 ||

@@ -22,9 +22,23 @@ Notable project changes are recorded here.
   spinners, artwork selection, and eight RGB444 color editors.
 - CRC-protected flash persistence and structured USB request/state packets for
   saving and retrieving the complete adapter configuration.
+- Tunable odd-source-line phase correction in 7.94 ns steps, available through
+  the USB console, structured control protocol, and Pico 2 configuration UI.
+- Tunable whole-line capture-rate correction in 1/256 PIO-divider steps, with
+  live console and GUI control plus flash persistence.
+- Automated viewer calibration sweeps over sample phase and horizontal rate
+  trim, with acknowledged setting changes, configurable settling, repeated
+  PNG captures, CSV/session metadata, cancellation, and settings restoration.
+- Persisted raw/second-tap SAA5050 source-dot reconstruction, applied
+  frame-atomically to VGA and identically to Pico 2 USB captures, with console
+  and GUI controls. The mode was selected from offline temporal analysis of a
+  1,250-frame calibration sweep.
 
 ### Changed
 
+- Calibration sweeps now request an explicit complete setting state, retry a
+  missing acknowledgement with a bounded timeout, report mismatched values,
+  and remember the last selected analysis parent directory.
 - Capture-buffer ownership now permits a short-lived Pico 2 USB reader without
   exposing a buffer that DMA may overwrite or changing the Pico/RP2040 memory
   footprint.
@@ -48,6 +62,10 @@ Notable project changes are recorded here.
   immediately; flash persistence remains an explicit action.
 - The on-board Pico LED now breathes slowly while seeking a P2000T signal and
   blinks at 0.5-second intervals while valid input is present.
+- The first captured line now compensates for its distinct sync-entry path
+  without the previous one-PIO-tick phase discrepancy.
+- Capture timing commands are rebuilt outside the shared frame-buffer lock so
+  the VGA core cannot be held off long enough to emit a missing scanline.
 
 ## 0.2.0 - 2026-08-27
 

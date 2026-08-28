@@ -34,11 +34,25 @@ enum {
     /**< Highest accepted first-visible-line setting. */
 
     P2000T_DEFAULT_SAMPLE_PHASE = 0,
-    /**< Default fine sampling phase in 7.94 ns capture-clock ticks. */
+    /**< Default fine sampling phase in nominal 7.94 ns capture ticks. */
     P2000T_MIN_SAMPLE_PHASE = -10,
     /**< Earliest accepted fine sampling phase. */
     P2000T_MAX_SAMPLE_PHASE = 10,
     /**< Latest accepted fine sampling phase. */
+
+    P2000T_DEFAULT_ODD_LINE_PHASE = 0,
+    /**< Default extra phase applied to odd-numbered source lines. */
+    P2000T_MIN_ODD_LINE_PHASE = -10,
+    /**< Earliest accepted odd-line correction in capture-clock ticks. */
+    P2000T_MAX_ODD_LINE_PHASE = 10,
+    /**< Latest accepted odd-line correction in capture-clock ticks. */
+
+    P2000T_DEFAULT_SAMPLE_RATE_TRIM = 0,
+    /**< Exact 2.0 PIO divider and nominal 12 MHz sampling. */
+    P2000T_MIN_SAMPLE_RATE_TRIM = -8,
+    /**< Fastest capture rate, in signed 1/256-divider steps. */
+    P2000T_MAX_SAMPLE_RATE_TRIM = 8,
+    /**< Slowest capture rate, in signed 1/256-divider steps. */
 
     P2000T_DEFAULT_HORIZONTAL_OFFSET = 48,
     /**< Default coarse start in nominal 6 MHz source dots. */
@@ -90,6 +104,8 @@ typedef struct {
     uint32_t last_frame_period_us;  /**< Most recent source frame period. */
     uint32_t first_visible_scanline; /**< Active vertical capture alignment. */
     int32_t sample_phase;            /**< Fine sampling phase in PIO ticks. */
+    int32_t odd_line_phase; /**< Extra phase on odd-numbered source lines. */
+    int32_t sample_rate_trim; /**< Signed 1/256 PIO-divider rate trim. */
     uint32_t horizontal_offset;      /**< Coarse start in source dots. */
     bool signal_present;             /**< Whether source timing is credible. */
 } p2000t_capture_stats_t;
@@ -168,12 +184,35 @@ void p2000t_capture_get_stats(p2000t_capture_stats_t *stats);
 bool p2000t_capture_set_first_visible_scanline(unsigned scanline);
 
 /**
- * @brief Trim the sampling start in 7.94 ns capture-clock ticks.
+ * @brief Trim the sampling start in nominal 7.94 ns capture-clock ticks.
  *
  * @param phase Requested signed fine phase.
  * @return true when accepted; false when outside the documented limits.
  */
 bool p2000t_capture_set_sample_phase(int phase);
+
+/**
+ * @brief Trim odd-numbered source lines relative to even-numbered lines.
+ *
+ * Source parity follows the configured one-based first visible scanline, so
+ * moving the capture window vertically preserves the physical line parity.
+ *
+ * @param phase Signed correction in 7.94 ns capture-clock ticks.
+ * @return true when accepted; false when outside the documented limits.
+ */
+bool p2000t_capture_set_odd_line_phase(int phase);
+
+/**
+ * @brief Trim the complete horizontal sampling interval.
+ *
+ * Positive values increase the PIO divider in 1/256 steps, sampling more
+ * slowly and moving the right edge later while leaving the sync anchor fixed.
+ * The new divider is adopted between complete source frames.
+ *
+ * @param trim Signed fractional-divider correction.
+ * @return true when accepted; false when outside the documented limits.
+ */
+bool p2000t_capture_set_sample_rate_trim(int trim);
 
 /**
  * @brief Select the coarse horizontal start in nominal 6 MHz source dots.

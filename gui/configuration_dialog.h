@@ -41,6 +41,9 @@ class ConfigurationDialog final : public QDialog {
 
     QSpinBox *vertical_ = nullptr;
     QSpinBox *phase_ = nullptr;
+    QSpinBox *odd_line_phase_ = nullptr;
+    QSpinBox *sample_rate_trim_ = nullptr;
+    QComboBox *sample_reconstruction_ = nullptr;
     QSpinBox *horizontal_ = nullptr;
     QComboBox *artwork_ = nullptr;
     QLabel *storage_status_ = nullptr;

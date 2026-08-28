@@ -17,13 +17,32 @@ Linux desktop-inspired icon set embedded in the same resource bundle.
 When launched, the viewer attempts to connect to the first detected Pico USB
 CDC port and start the selected stream encoding. Manual port refresh and
 connect/disconnect controls remain available. Adapter > Configure Pico 2 opens
-a modal with exact spin boxes for capture alignment, an artwork selector, and
-eight RGB444 color rows with channel spinners and color pickers. Every edit is
-sent to the Pico immediately for live debugging. Reload from Pico retrieves the
-saved flash copy, Factory defaults restores firmware defaults, and Save to Pico
-writes the current values as a CRC-protected persistent copy. These controls
-require firmware containing the matching structured control protocol. File >
-Exit and Help > About provide the standard application menu entries.
+a modal with exact spin boxes for capture alignment, an artwork selector, an
+independent odd-line sampling-phase correction, and a whole-line sampling-rate
+trim, a raw/second-tap source-dot reconstruction selector, plus eight RGB444
+color rows with channel spinners and color pickers.
+Every edit is sent to the Pico
+immediately for live debugging. Reload from Pico retrieves the saved flash
+copy, Factory defaults restores firmware defaults, and Save to Pico writes the
+current values as a CRC-protected persistent copy. These controls require
+firmware containing the matching structured control protocol. File > Exit and
+Help > About provide the standard application menu entries.
+
+**Adapter > Capture calibration sweep** automates repeatable alignment tests
+against a static P2000T screen. Choose inclusive ranges for fine sample phase
+and horizontal rate trim, the number of streamed frames to discard after each
+change, and the number of consecutive PNGs to retain. The odd-line phase and
+source-dot reconstruction mode stay at their current values. After choosing a
+parent directory, the viewer creates a
+timestamped `p2000t-analysis-*` directory containing lossless 480x480 PNGs,
+`manifest.csv` with the requested settings and actual source-frame sequence,
+and `session.txt` with the sweep and original settings. Progress can be
+cancelled at any time; completed and cancelled sweeps restore the original
+phase, odd-line phase, and rate trim. Partial images and the manifest are kept
+when a sweep is cancelled or a write fails. The viewer remembers the last
+selected parent directory. Setting acknowledgements are retried and time out
+with the requested and last-reported values instead of leaving a sweep waiting
+indefinitely.
 
 The firmware command `c` starts the recommended PackBits stream, `r` starts a
 raw stream, and `q` returns it to the normal USB console. Streaming is currently

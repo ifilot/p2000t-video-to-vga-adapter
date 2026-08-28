@@ -43,6 +43,57 @@ static uint32_t settings_crc32(const uint8_t *data, size_t length) {
     return ~crc;
 }
 
+unsigned p2000t_settings_artwork(const p2000t_settings_t *settings) {
+    return settings->capture_options & P2000T_CONFIGURATION_ARTWORK_MASK;
+}
+
+void p2000t_settings_set_artwork(p2000t_settings_t *settings,
+                                 unsigned artwork) {
+    settings->capture_options =
+        (uint8_t)((settings->capture_options &
+                   (P2000T_CONFIGURATION_SAMPLE_RECONSTRUCTION_MASK |
+                    (P2000T_CONFIGURATION_RATE_TRIM_VALUE_MASK
+                     << P2000T_CONFIGURATION_RATE_TRIM_SHIFT))) |
+                  (artwork & P2000T_CONFIGURATION_ARTWORK_MASK));
+}
+
+unsigned
+p2000t_settings_sample_reconstruction(const p2000t_settings_t *settings) {
+    return (settings->capture_options &
+            P2000T_CONFIGURATION_SAMPLE_RECONSTRUCTION_MASK) >>
+           P2000T_CONFIGURATION_SAMPLE_RECONSTRUCTION_SHIFT;
+}
+
+void p2000t_settings_set_sample_reconstruction(p2000t_settings_t *settings,
+                                               unsigned reconstruction) {
+    settings->capture_options =
+        (uint8_t)((settings->capture_options &
+                   (P2000T_CONFIGURATION_ARTWORK_MASK |
+                    (P2000T_CONFIGURATION_RATE_TRIM_VALUE_MASK
+                     << P2000T_CONFIGURATION_RATE_TRIM_SHIFT))) |
+                  ((reconstruction
+                    << P2000T_CONFIGURATION_SAMPLE_RECONSTRUCTION_SHIFT) &
+                   P2000T_CONFIGURATION_SAMPLE_RECONSTRUCTION_MASK));
+}
+
+int p2000t_settings_sample_rate_trim(const p2000t_settings_t *settings) {
+    const unsigned encoded =
+        settings->capture_options >> P2000T_CONFIGURATION_RATE_TRIM_SHIFT;
+    return (encoded & 0x10u) != 0u ? (int)encoded - 32 : (int)encoded;
+}
+
+void p2000t_settings_set_sample_rate_trim(p2000t_settings_t *settings,
+                                          int trim) {
+    const uint8_t encoded =
+        (uint8_t)(((unsigned)trim & P2000T_CONFIGURATION_RATE_TRIM_VALUE_MASK)
+                  << P2000T_CONFIGURATION_RATE_TRIM_SHIFT);
+    settings->capture_options =
+        (uint8_t)((settings->capture_options &
+                   (P2000T_CONFIGURATION_ARTWORK_MASK |
+                    P2000T_CONFIGURATION_SAMPLE_RECONSTRUCTION_MASK)) |
+                  encoded);
+}
+
 void p2000t_settings_defaults(p2000t_settings_t *settings) {
     static const uint16_t default_palette[P2000T_CONTROL_PALETTE_COLORS] = {
         0x0000, 0x000f, 0x00f0, 0x00ff, 0x0f00, 0x0f0f, 0x0ff0, 0x0fff,
@@ -51,7 +102,12 @@ void p2000t_settings_defaults(p2000t_settings_t *settings) {
     settings->first_visible_scanline = P2000T_CONTROL_DEFAULT_VERTICAL;
     settings->sample_phase = P2000T_CONTROL_DEFAULT_PHASE;
     settings->horizontal_offset = P2000T_CONTROL_DEFAULT_HORIZONTAL;
-    settings->no_signal_artwork = P2000T_CONTROL_DEFAULT_ARTWORK;
+    p2000t_settings_set_artwork(settings, P2000T_CONTROL_DEFAULT_ARTWORK);
+    p2000t_settings_set_sample_rate_trim(
+        settings, P2000T_CONTROL_DEFAULT_SAMPLE_RATE_TRIM);
+    p2000t_settings_set_sample_reconstruction(
+        settings, P2000T_CONTROL_DEFAULT_SAMPLE_RECONSTRUCTION);
+    settings->odd_line_phase = P2000T_CONTROL_DEFAULT_ODD_LINE_PHASE;
     memcpy(settings->palette, default_palette, sizeof(default_palette));
 }
 
@@ -61,9 +117,17 @@ bool p2000t_settings_valid(const p2000t_settings_t *settings) {
         settings->first_visible_scanline > P2000T_CONTROL_MAX_VERTICAL ||
         settings->sample_phase < P2000T_CONTROL_MIN_PHASE ||
         settings->sample_phase > P2000T_CONTROL_MAX_PHASE ||
+        settings->odd_line_phase < P2000T_CONTROL_MIN_ODD_LINE_PHASE ||
+        settings->odd_line_phase > P2000T_CONTROL_MAX_ODD_LINE_PHASE ||
+        p2000t_settings_sample_rate_trim(settings) <
+            P2000T_CONTROL_MIN_SAMPLE_RATE_TRIM ||
+        p2000t_settings_sample_rate_trim(settings) >
+            P2000T_CONTROL_MAX_SAMPLE_RATE_TRIM ||
+        p2000t_settings_sample_reconstruction(settings) >=
+            P2000T_CONTROL_SAMPLE_RECONSTRUCTION_COUNT ||
         settings->horizontal_offset > P2000T_CONTROL_MAX_HORIZONTAL ||
         settings->horizontal_offset % P2000T_CONTROL_HORIZONTAL_STEP != 0u ||
-        settings->no_signal_artwork >= 3u || settings->reserved != 0u) {
+        p2000t_settings_artwork(settings) >= 3u) {
         return false;
     }
     for (unsigned index = 0; index < P2000T_CONTROL_PALETTE_COLORS; ++index) {

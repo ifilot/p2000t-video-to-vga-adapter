@@ -36,6 +36,8 @@ void p2000t_usb_stream_start(bool allow_packbits);
 void p2000t_usb_stream_stop(void);
 /** Return whether binary screen mode is active. */
 bool p2000t_usb_stream_active(void);
+/** Select whether USB frames duplicate each source dot's second raw tap. */
+void p2000t_usb_stream_set_second_tap_reconstruction(bool enabled);
 /**
  * @brief Refill TinyUSB without ever waiting for host-side capacity.
  *
@@ -45,11 +47,10 @@ bool p2000t_usb_stream_active(void);
  * @param signal_present Whether capture currently has a credible input.
  * @param no_signal_artwork Zero-based selected no-connection artwork.
  */
-void p2000t_usb_stream_service(bool signal_present,
-                               unsigned no_signal_artwork);
+void p2000t_usb_stream_service(bool signal_present, unsigned no_signal_artwork);
 /** Queue the newest configuration state as a framed stream record. */
 void p2000t_usb_stream_queue_configuration(const uint8_t *payload,
-                                            uint32_t payload_size);
+                                           uint32_t payload_size);
 /** Copy a consistent snapshot of streaming diagnostics. */
 void p2000t_usb_stream_get_stats(p2000t_usb_stream_stats_t *stats);
 

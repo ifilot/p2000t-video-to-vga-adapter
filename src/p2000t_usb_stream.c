@@ -32,8 +32,7 @@ enum {
     STREAM_PACKBITS_STAGING_SIZE = 1024,
 };
 
-_Static_assert((unsigned)P2000T_STREAM_WIDTH ==
-                   (unsigned)P2000T_CAPTURE_WIDTH,
+_Static_assert((unsigned)P2000T_STREAM_WIDTH == (unsigned)P2000T_CAPTURE_WIDTH,
                "Stream width must match capture width");
 _Static_assert((unsigned)P2000T_STREAM_HEIGHT ==
                    (unsigned)P2000T_CAPTURE_HEIGHT,
@@ -50,6 +49,7 @@ static uint8_t packbits_staging[STREAM_PACKBITS_STAGING_SIZE];
 
 static bool stream_active;
 static bool packbits_allowed;
+static bool second_tap_reconstruction;
 static bool tx_active;
 static bool tx_packbits;
 static bool tx_configuration;
@@ -110,8 +110,7 @@ static void pack_rgb111_frame(const uint32_t *capture) {
     uint8_t *const blue_plane = stream_frame + 2u * P2000T_STREAM_PLANE_SIZE;
 
     for (unsigned y = 0; y < P2000T_CAPTURE_HEIGHT; ++y) {
-        const uint32_t *source =
-            capture + y * P2000T_CAPTURE_WORDS_PER_LINE;
+        const uint32_t *source = capture + y * P2000T_CAPTURE_WORDS_PER_LINE;
         const unsigned row_offset = y * P2000T_STREAM_PLANE_STRIDE;
         for (unsigned word_index = 0;
              word_index < P2000T_CAPTURE_WORDS_PER_LINE; ++word_index) {
@@ -120,14 +119,22 @@ static void pack_rgb111_frame(const uint32_t *capture) {
             uint8_t green = 0u;
             uint8_t blue = 0u;
             for (unsigned pixel = 0; pixel < 8u; ++pixel) {
-                const unsigned shift = 28u - pixel * 4u;
+                const unsigned source_pixel =
+                    second_tap_reconstruction ? (pixel | 1u) : pixel;
+                const unsigned shift = 28u - source_pixel * 4u;
                 const uint8_t raw = (uint8_t)(raw_word >> shift) & 0x0fu;
                 red = (uint8_t)((red << 1u) |
-                    ((((raw >> P2000T_RED_CHANNEL) & 1u) == 0u) ? 1u : 0u));
+                                ((((raw >> P2000T_RED_CHANNEL) & 1u) == 0u)
+                                     ? 1u
+                                     : 0u));
                 green = (uint8_t)((green << 1u) |
-                    ((((raw >> P2000T_GREEN_CHANNEL) & 1u) == 0u) ? 1u : 0u));
+                                  ((((raw >> P2000T_GREEN_CHANNEL) & 1u) == 0u)
+                                       ? 1u
+                                       : 0u));
                 blue = (uint8_t)((blue << 1u) |
-                    ((((raw >> P2000T_BLUE_CHANNEL) & 1u) == 0u) ? 1u : 0u));
+                                 ((((raw >> P2000T_BLUE_CHANNEL) & 1u) == 0u)
+                                      ? 1u
+                                      : 0u));
             }
             const unsigned output = row_offset + word_index;
             red_plane[output] = red;
@@ -146,14 +153,15 @@ static void build_header(uint32_t sequence, uint32_t checksum) {
                            : (tx_packbits ? P2000T_STREAM_ENCODING_PACKBITS
                                           : P2000T_STREAM_ENCODING_RAW);
     if (tx_configuration) {
-        store_u16(&stream_header[6],
-                  P2000T_STREAM_FLAG_CONFIGURATION_STATE);
+        store_u16(&stream_header[6], P2000T_STREAM_FLAG_CONFIGURATION_STATE);
         store_u16(&stream_header[22], P2000T_STREAM_HEADER_SIZE);
         store_u32(&stream_header[24], (uint32_t)tx_payload_size);
         store_u32(&stream_header[28], checksum);
         store_u32(&stream_header[32], (uint32_t)tx_payload_size);
         stream_header[P2000T_STREAM_ARTWORK_OFFSET] =
-            tx_configuration_payload[14];
+            tx_configuration_payload
+                [P2000T_CONFIGURATION_CAPTURE_OPTIONS_OFFSET] &
+            P2000T_CONFIGURATION_ARTWORK_MASK;
         return;
     }
     uint16_t flags = P2000T_STREAM_FLAG_PLANAR_RGB111 |
@@ -164,14 +172,13 @@ static void build_header(uint32_t sequence, uint32_t checksum) {
     }
     store_u16(&stream_header[6], flags);
     store_u32(&stream_header[8], sequence);
-    const uint32_t timing =
-        (stream_stats.last_prepare_us > UINT16_MAX
-             ? UINT16_MAX
-             : stream_stats.last_prepare_us) |
-        ((stream_stats.last_encode_us > UINT16_MAX
-              ? UINT16_MAX
-              : stream_stats.last_encode_us)
-         << 16u);
+    const uint32_t timing = (stream_stats.last_prepare_us > UINT16_MAX
+                                 ? UINT16_MAX
+                                 : stream_stats.last_prepare_us) |
+                            ((stream_stats.last_encode_us > UINT16_MAX
+                                  ? UINT16_MAX
+                                  : stream_stats.last_encode_us)
+                             << 16u);
     store_u32(&stream_header[12], timing);
     store_u16(&stream_header[16], P2000T_STREAM_WIDTH);
     store_u16(&stream_header[18], P2000T_STREAM_HEIGHT);
@@ -237,9 +244,9 @@ static void begin_available_frame(bool signal_present,
     }
 
     if (!signal_present) {
-        const bool state_changed =
-            !last_display_state_valid || last_signal_present ||
-            last_no_signal_artwork != no_signal_artwork;
+        const bool state_changed = !last_display_state_valid ||
+                                   last_signal_present ||
+                                   last_no_signal_artwork != no_signal_artwork;
         if (state_changed) {
             begin_no_signal_record(no_signal_artwork);
         }
@@ -263,19 +270,16 @@ static void begin_available_frame(bool signal_present,
     pack_rgb111_frame(p2000t_capture_buffer((unsigned)buffer_index));
     p2000t_capture_release_frame_from_usb((unsigned)buffer_index);
 
-    const size_t encoded_size = packbits_allowed
-                                    ? p2000t_packbits_encoded_size(
-                                          stream_frame,
-                                          P2000T_STREAM_PAYLOAD_SIZE)
-                                    : P2000T_STREAM_PAYLOAD_SIZE;
+    const size_t encoded_size =
+        packbits_allowed ? p2000t_packbits_encoded_size(
+                               stream_frame, P2000T_STREAM_PAYLOAD_SIZE)
+                         : P2000T_STREAM_PAYLOAD_SIZE;
     tx_packbits = encoded_size < P2000T_STREAM_PAYLOAD_SIZE;
     tx_configuration = false;
-    tx_payload_size = tx_packbits ? encoded_size
-                                  : P2000T_STREAM_PAYLOAD_SIZE;
+    tx_payload_size = tx_packbits ? encoded_size : P2000T_STREAM_PAYLOAD_SIZE;
     const uint32_t checksum =
         frame_crc32(stream_frame, P2000T_STREAM_PAYLOAD_SIZE);
-    stream_stats.last_prepare_us =
-        (uint32_t)(time_us_64() - prepare_started);
+    stream_stats.last_prepare_us = (uint32_t)(time_us_64() - prepare_started);
     if (stream_stats.last_prepare_us > stream_stats.maximum_prepare_us) {
         stream_stats.maximum_prepare_us = stream_stats.last_prepare_us;
     }
@@ -302,8 +306,7 @@ static void fill_packbits_staging(void) {
            STREAM_PACKBITS_STAGING_SIZE - packbits_staging_size >=
                P2000T_PACKBITS_MAX_CHUNK) {
         const size_t chunk = p2000t_packbits_next_chunk(
-            stream_frame, P2000T_STREAM_PAYLOAD_SIZE,
-            &packbits_input_offset,
+            stream_frame, P2000T_STREAM_PAYLOAD_SIZE, &packbits_input_offset,
             &packbits_staging[packbits_staging_size]);
         hard_assert(chunk != 0u);
         packbits_staging_size += chunk;
@@ -332,7 +335,7 @@ void p2000t_usb_stream_stop(void) {
 }
 
 void p2000t_usb_stream_queue_configuration(const uint8_t *payload,
-                                            uint32_t payload_size) {
+                                           uint32_t payload_size) {
     hard_assert(payload != NULL);
     hard_assert(payload_size == sizeof(pending_configuration));
     memcpy(pending_configuration, payload, sizeof(pending_configuration));
@@ -341,6 +344,10 @@ void p2000t_usb_stream_queue_configuration(const uint8_t *payload,
 
 bool p2000t_usb_stream_active(void) {
     return stream_active;
+}
+
+void p2000t_usb_stream_set_second_tap_reconstruction(bool enabled) {
+    second_tap_reconstruction = enabled;
 }
 
 void p2000t_usb_stream_service(bool signal_present,
@@ -438,13 +445,10 @@ void p2000t_usb_stream_service(bool signal_present,
             stream_stats.bytes_sent +=
                 P2000T_STREAM_HEADER_SIZE + tx_payload_size;
             stream_stats.last_encode_us = tx_encode_us;
-            if (stream_stats.last_encode_us >
-                stream_stats.maximum_encode_us) {
-                stream_stats.maximum_encode_us =
-                    stream_stats.last_encode_us;
+            if (stream_stats.last_encode_us > stream_stats.maximum_encode_us) {
+                stream_stats.maximum_encode_us = stream_stats.last_encode_us;
             }
-            stream_stats.last_tx_us =
-                (uint32_t)(time_us_64() - tx_started_us);
+            stream_stats.last_tx_us = (uint32_t)(time_us_64() - tx_started_us);
             if (stream_stats.last_tx_us > stream_stats.maximum_tx_us) {
                 stream_stats.maximum_tx_us = stream_stats.last_tx_us;
             }

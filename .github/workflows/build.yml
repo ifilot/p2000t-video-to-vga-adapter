@@ -164,18 +164,47 @@ jobs:
             dist/p2000t-vid2vga-capture-windows.zip
             dist/p2000t-vid2vga-capture-windows-setup.exe
 
+  screentest:
+    name: Build SAA5050 screen-test cartridge
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Install cartridge build tools
+        run: sudo apt-get update && sudo apt-get install --yes z80asm python3
+
+      - name: Build and verify cartridge
+        run: |
+          make -C screentest
+          make -C screentest verify
+
+      - name: Prepare cartridge artifact
+        run: |
+          mkdir -p dist
+          cp screentest/screentest.bin dist/p2000t-screentest.bin
+
+      - name: Upload screen-test cartridge
+        uses: actions/upload-artifact@v4
+        with:
+          name: p2000t-screentest
+          if-no-files-found: error
+          path: dist/p2000t-screentest.bin
+
   release:
     name: Create GitHub Release
     if: startsWith(github.ref, 'refs/tags/')
     needs:
       - build
       - viewer-windows
+      - screentest
     runs-on: ubuntu-24.04
     permissions:
       contents: write
 
     steps:
-      - name: Download Pico and Pico 2 artifacts
+      - name: Download release artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: p2000t-vid2vga-*
@@ -190,6 +219,7 @@ jobs:
           gh release create "${GITHUB_REF_NAME}"
           dist/p2000t-vid2vga-pico.uf2
           dist/p2000t-vid2vga-pico2.uf2
+          dist/p2000t-screentest.bin
           dist/p2000t-vid2vga-capture-windows.zip
           dist/p2000t-vid2vga-capture-windows-setup.exe
           --verify-tag

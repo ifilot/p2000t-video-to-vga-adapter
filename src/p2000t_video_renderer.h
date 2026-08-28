@@ -11,6 +11,7 @@
  * @brief Rendering of captured P2000T frames and the no-signal status screen.
  */
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "pico/scanvideo.h"
@@ -47,6 +48,14 @@ void p2000t_video_renderer_initialize(void);
 
 /** Build and queue an eight-entry RGB444 source palette. */
 void p2000t_video_renderer_set_source_palette(const uint16_t colors[8]);
+
+/**
+ * @brief Select raw taps or duplicate the second tap of every source dot.
+ *
+ * The requested mode is adopted at the next VGA frame boundary so a mode
+ * change cannot split one displayed frame between reconstruction methods.
+ */
+void p2000t_video_renderer_set_second_tap_reconstruction(bool enabled);
 
 /** Adopt the newest complete source palette at a VGA frame boundary. */
 void p2000t_video_renderer_begin_frame(void);

@@ -45,6 +45,33 @@ ConfigurationDialog::ConfigurationDialog(const PicoConfiguration &configuration,
     phase_->setRange(P2000T_CONTROL_MIN_PHASE, P2000T_CONTROL_MAX_PHASE);
     phase_->setPrefix(QStringLiteral("Phase "));
     phase_->setSuffix(QStringLiteral(" tick"));
+    odd_line_phase_ = new QSpinBox(capture);
+    odd_line_phase_->setRange(P2000T_CONTROL_MIN_ODD_LINE_PHASE,
+                              P2000T_CONTROL_MAX_ODD_LINE_PHASE);
+    odd_line_phase_->setPrefix(QStringLiteral("Phase "));
+    odd_line_phase_->setSuffix(QStringLiteral(" tick"));
+    odd_line_phase_->setToolTip(QStringLiteral(
+        "Extra delay for odd-numbered physical P2000T source lines; "
+        "positive values sample them later."));
+    sample_rate_trim_ = new QSpinBox(capture);
+    sample_rate_trim_->setRange(P2000T_CONTROL_MIN_SAMPLE_RATE_TRIM,
+                                P2000T_CONTROL_MAX_SAMPLE_RATE_TRIM);
+    sample_rate_trim_->setPrefix(QStringLiteral("Trim "));
+    sample_rate_trim_->setSuffix(QStringLiteral(" step"));
+    sample_rate_trim_->setToolTip(QStringLiteral(
+        "Adjust the complete horizontal sampling interval in 1/256 PIO "
+        "divider steps. Positive values make the captured line wider; "
+        "each step moves its right edge by about 0.94 pixel."));
+    sample_reconstruction_ = new QComboBox(capture);
+    sample_reconstruction_->addItem(QStringLiteral("Raw two taps (legacy)"),
+                                    P2000T_CONTROL_SAMPLE_RECONSTRUCTION_RAW);
+    sample_reconstruction_->addItem(
+        QStringLiteral("Duplicate second tap (stable)"),
+        P2000T_CONTROL_SAMPLE_RECONSTRUCTION_SECOND_TAP);
+    sample_reconstruction_->setToolTip(QStringLiteral(
+        "The SAA5050 emits 240 nominal source dots. Stable reconstruction "
+        "uses the later of each pair of 12 MHz samples for both corresponding "
+        "VGA pixels; raw mode preserves both samples independently."));
     horizontal_ = new QSpinBox(capture);
     horizontal_->setRange(
         P2000T_CONTROL_MIN_HORIZONTAL / P2000T_CONTROL_HORIZONTAL_STEP,
@@ -56,11 +83,23 @@ ConfigurationDialog::ConfigurationDialog(const PicoConfiguration &configuration,
                         QStringLiteral("Amber circuit")});
     captureForm->addRow(QStringLiteral("First visible line:"), vertical_);
     captureForm->addRow(QStringLiteral("Fine sample phase:"), phase_);
+    captureForm->addRow(QStringLiteral("Odd-line correction:"),
+                        odd_line_phase_);
+    captureForm->addRow(QStringLiteral("Horizontal rate trim:"),
+                        sample_rate_trim_);
+    captureForm->addRow(QStringLiteral("Source-dot reconstruction:"),
+                        sample_reconstruction_);
     captureForm->addRow(QStringLiteral("Horizontal start:"), horizontal_);
     captureForm->addRow(QStringLiteral("No-signal artwork:"), artwork_);
     connect(vertical_, &QSpinBox::valueChanged, this,
             [this] { applyLiveChange(); });
     connect(phase_, &QSpinBox::valueChanged, this,
+            [this] { applyLiveChange(); });
+    connect(odd_line_phase_, &QSpinBox::valueChanged, this,
+            [this] { applyLiveChange(); });
+    connect(sample_rate_trim_, &QSpinBox::valueChanged, this,
+            [this] { applyLiveChange(); });
+    connect(sample_reconstruction_, &QComboBox::currentIndexChanged, this,
             [this] { applyLiveChange(); });
     connect(horizontal_, &QSpinBox::valueChanged, this,
             [this] { applyLiveChange(); });
@@ -151,6 +190,9 @@ PicoConfiguration ConfigurationDialog::configuration() const {
     PicoConfiguration result;
     result.vertical = vertical_->value();
     result.phase = phase_->value();
+    result.oddLinePhase = odd_line_phase_->value();
+    result.sampleRateTrim = sample_rate_trim_->value();
+    result.sampleReconstruction = sample_reconstruction_->currentData().toInt();
     result.horizontal = horizontal_->value() * P2000T_CONTROL_HORIZONTAL_STEP;
     result.artwork = artwork_->currentIndex();
     for (int index = 0; index < P2000T_CONTROL_PALETTE_COLORS; ++index) {
@@ -166,10 +208,19 @@ void ConfigurationDialog::setConfiguration(
     const PicoConfiguration &configuration) {
     const QSignalBlocker verticalBlock(vertical_);
     const QSignalBlocker phaseBlock(phase_);
+    const QSignalBlocker oddLinePhaseBlock(odd_line_phase_);
+    const QSignalBlocker sampleRateTrimBlock(sample_rate_trim_);
+    const QSignalBlocker sampleReconstructionBlock(sample_reconstruction_);
     const QSignalBlocker horizontalBlock(horizontal_);
     const QSignalBlocker artworkBlock(artwork_);
     vertical_->setValue(configuration.vertical);
     phase_->setValue(configuration.phase);
+    odd_line_phase_->setValue(configuration.oddLinePhase);
+    sample_rate_trim_->setValue(configuration.sampleRateTrim);
+    const int reconstructionIndex =
+        sample_reconstruction_->findData(configuration.sampleReconstruction);
+    sample_reconstruction_->setCurrentIndex(
+        reconstructionIndex >= 0 ? reconstructionIndex : 0);
     horizontal_->setValue(configuration.horizontal /
                           P2000T_CONTROL_HORIZONTAL_STEP);
     artwork_->setCurrentIndex(configuration.artwork);

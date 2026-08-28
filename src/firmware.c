@@ -44,13 +44,13 @@
 
 /** Firmware clock, voltage, and inter-core synchronization constants. */
 enum {
-    SYSTEM_CLOCK_KHZ = 252000,     /**< Overclocked system frequency. */
-    SYSTEM_CORE_VOLTAGE_MV = 1300, /**< Core voltage used at 252 MHz. */
-    VGA_READY_MAGIC = 0x56474154,  /**< Core-1 VGA-ready FIFO token. */
-    STATUS_LED_MAX_LEVEL = 255, /**< Maximum logical brightness. */
-    STATUS_LED_PWM_WRAP = 65535, /**< Full 16-bit PWM brightness range. */
+    SYSTEM_CLOCK_KHZ = 252000,        /**< Overclocked system frequency. */
+    SYSTEM_CORE_VOLTAGE_MV = 1300,    /**< Core voltage used at 252 MHz. */
+    VGA_READY_MAGIC = 0x56474154,     /**< Core-1 VGA-ready FIFO token. */
+    STATUS_LED_MAX_LEVEL = 255,       /**< Maximum logical brightness. */
+    STATUS_LED_PWM_WRAP = 65535,      /**< Full 16-bit PWM brightness range. */
     STATUS_LED_PWM_CLOCK_DIVIDER = 8, /**< About 480 Hz at 252 MHz. */
-    STATUS_LED_SERVICE_INTERVAL_US = 5000, /**< 200 Hz LED update rate. */
+    STATUS_LED_SERVICE_INTERVAL_US = 5000,  /**< 200 Hz LED update rate. */
     STATUS_LED_ACTIVE_INTERVAL_US = 500000, /**< Connected on/off interval. */
     STATUS_LED_SEEK_CYCLE_US = 2500000, /**< Complete seeking breath cycle. */
     STATUS_LED_SEEK_HALF_CYCLE_US = STATUS_LED_SEEK_CYCLE_US / 2,
@@ -65,9 +65,23 @@ _Static_assert(P2000T_VGA_RENDER_HEIGHT *P2000T_VGA_VERTICAL_SCALE ==
 _Static_assert((unsigned)P2000T_CAPTURE_HEIGHT ==
                    (unsigned)P2000T_VGA_RENDER_HEIGHT,
                "Each source line must map to one logical scanvideo line");
+_Static_assert((int)P2000T_MIN_ODD_LINE_PHASE ==
+                       (int)P2000T_CONTROL_MIN_ODD_LINE_PHASE &&
+                   (int)P2000T_MAX_ODD_LINE_PHASE ==
+                       (int)P2000T_CONTROL_MAX_ODD_LINE_PHASE &&
+                   (int)P2000T_DEFAULT_ODD_LINE_PHASE ==
+                       (int)P2000T_CONTROL_DEFAULT_ODD_LINE_PHASE,
+               "Capture and control odd-line phase ranges must match");
+_Static_assert((int)P2000T_MIN_SAMPLE_RATE_TRIM ==
+                       (int)P2000T_CONTROL_MIN_SAMPLE_RATE_TRIM &&
+                   (int)P2000T_MAX_SAMPLE_RATE_TRIM ==
+                       (int)P2000T_CONTROL_MAX_SAMPLE_RATE_TRIM &&
+                   (int)P2000T_DEFAULT_SAMPLE_RATE_TRIM ==
+                       (int)P2000T_CONTROL_DEFAULT_SAMPLE_RATE_TRIM,
+               "Capture and control sample-rate trim ranges must match");
 #if defined(PICO_RP2350) && PICO_RP2350
 _Static_assert((unsigned)P2000T_NO_SIGNAL_GREEN_PHOSPHOR ==
-                   (unsigned)P2000T_STREAM_ARTWORK_GREEN_PHOSPHOR &&
+                       (unsigned)P2000T_STREAM_ARTWORK_GREEN_PHOSPHOR &&
                    (unsigned)P2000T_NO_SIGNAL_SYNTHWAVE ==
                        (unsigned)P2000T_STREAM_ARTWORK_SYNTHWAVE &&
                    (unsigned)P2000T_NO_SIGNAL_AMBER_CIRCUIT ==
@@ -108,9 +122,9 @@ static const scanvideo_mode_t firmware_vga_mode = {
 
 /** Frame and scanline state owned exclusively by the VGA core. */
 typedef struct {
-    int buffer_index;               /**< Currently displayed capture buffer. */
-    const uint32_t *frame;          /**< Packed frame currently being read. */
-    bool signal_present;            /**< Signal decision fixed per VGA frame. */
+    int buffer_index;      /**< Currently displayed capture buffer. */
+    const uint32_t *frame; /**< Packed frame currently being read. */
+    bool signal_present;   /**< Signal decision fixed per VGA frame. */
     p2000t_no_signal_artwork_t
         no_signal_artwork;          /**< Artwork fixed per VGA frame. */
     uint32_t previous_scanline_id;  /**< Last scanvideo identifier observed. */
@@ -126,8 +140,10 @@ typedef struct {
     volatile uint32_t
         signal_lost_frames;             /**< VGA frames with no valid input. */
     volatile uint32_t scanline_id_gaps; /**< Non-contiguous scanline IDs. */
-    volatile uint32_t signal_present; /**< Signal state used by current VGA frame. */
-    volatile uint32_t no_signal_artwork; /**< Artwork used by current VGA frame. */
+    volatile uint32_t
+        signal_present; /**< Signal state used by current VGA frame. */
+    volatile uint32_t
+        no_signal_artwork; /**< Artwork used by current VGA frame. */
 } vga_statistics_t;
 
 /** VGA-core-owned display state, initialized without a captured frame. */
@@ -162,19 +178,17 @@ static bool status_led_state_initialized;
 static uint8_t control_packet[P2000T_CONTROL_PACKET_SIZE];
 static unsigned control_packet_offset;
 
-_Static_assert((int)P2000T_CONTROL_MIN_VERTICAL ==
-                       (int)P2000T_MIN_FIRST_VISIBLE_SCANLINE &&
-                   (int)P2000T_CONTROL_MAX_VERTICAL ==
-                       (int)P2000T_MAX_FIRST_VISIBLE_SCANLINE &&
-                   (int)P2000T_CONTROL_MIN_PHASE ==
-                       (int)P2000T_MIN_SAMPLE_PHASE &&
-                   (int)P2000T_CONTROL_MAX_PHASE ==
-                       (int)P2000T_MAX_SAMPLE_PHASE &&
-                   (int)P2000T_CONTROL_MIN_HORIZONTAL ==
-                       (int)P2000T_MIN_HORIZONTAL_OFFSET &&
-                   (int)P2000T_CONTROL_MAX_HORIZONTAL ==
-                       (int)P2000T_MAX_HORIZONTAL_OFFSET,
-               "Control protocol limits must match capture limits");
+_Static_assert(
+    (int)P2000T_CONTROL_MIN_VERTICAL ==
+            (int)P2000T_MIN_FIRST_VISIBLE_SCANLINE &&
+        (int)P2000T_CONTROL_MAX_VERTICAL ==
+            (int)P2000T_MAX_FIRST_VISIBLE_SCANLINE &&
+        (int)P2000T_CONTROL_MIN_PHASE == (int)P2000T_MIN_SAMPLE_PHASE &&
+        (int)P2000T_CONTROL_MAX_PHASE == (int)P2000T_MAX_SAMPLE_PHASE &&
+        (int)P2000T_CONTROL_MIN_HORIZONTAL ==
+            (int)P2000T_MIN_HORIZONTAL_OFFSET &&
+        (int)P2000T_CONTROL_MAX_HORIZONTAL == (int)P2000T_MAX_HORIZONTAL_OFFSET,
+    "Control protocol limits must match capture limits");
 
 /**
  * @brief Increment a diagnostic counter owned exclusively by the VGA core.
@@ -220,10 +234,9 @@ static void status_led_set_level(unsigned level) {
 #if defined(PICO_DEFAULT_LED_PIN_INVERTED) && PICO_DEFAULT_LED_PIN_INVERTED
     level = STATUS_LED_MAX_LEVEL - level;
 #endif
-    pwm_set_gpio_level(PICO_DEFAULT_LED_PIN,
-                       (uint16_t)(level *
-                                  (STATUS_LED_PWM_WRAP /
-                                   STATUS_LED_MAX_LEVEL)));
+    pwm_set_gpio_level(
+        PICO_DEFAULT_LED_PIN,
+        (uint16_t)(level * (STATUS_LED_PWM_WRAP / STATUS_LED_MAX_LEVEL)));
 }
 
 /** @brief Configure low-frequency hardware PWM for the on-board LED. */
@@ -271,13 +284,11 @@ static void status_led_service(bool signal_present) {
                     : 0u;
     } else {
         const uint32_t phase_us = elapsed_us % STATUS_LED_SEEK_CYCLE_US;
-        const uint32_t ramp_us =
-            phase_us <= STATUS_LED_SEEK_HALF_CYCLE_US
-                ? phase_us
-                : STATUS_LED_SEEK_CYCLE_US - phase_us;
+        const uint32_t ramp_us = phase_us <= STATUS_LED_SEEK_HALF_CYCLE_US
+                                     ? phase_us
+                                     : STATUS_LED_SEEK_CYCLE_US - phase_us;
         const unsigned linear_level =
-            (ramp_us * STATUS_LED_MAX_LEVEL) /
-            STATUS_LED_SEEK_HALF_CYCLE_US;
+            (ramp_us * STATUS_LED_MAX_LEVEL) / STATUS_LED_SEEK_HALF_CYCLE_US;
         level = (linear_level * linear_level + STATUS_LED_MAX_LEVEL - 1u) /
                 STATUS_LED_MAX_LEVEL;
     }
@@ -294,8 +305,9 @@ static void status_led_service(bool signal_present) {
 static void select_frame_for_next_vga_frame(void) {
     increment_counter(&vga_statistics.generated_frames);
     p2000t_video_renderer_begin_frame();
-    display_state.no_signal_artwork = (p2000t_no_signal_artwork_t)
-        load_statistic(&requested_no_signal_artwork);
+    display_state.no_signal_artwork =
+        (p2000t_no_signal_artwork_t)load_statistic(
+            &requested_no_signal_artwork);
     display_state.signal_present = p2000t_capture_signal_present();
     store_statistic(&vga_statistics.signal_present,
                     display_state.signal_present ? 1u : 0u);
@@ -363,8 +375,8 @@ static void render_scanline(scanvideo_scanline_buffer_t *scanline_buffer) {
         select_frame_for_next_vga_frame();
     }
     if (!display_state.signal_present || display_state.buffer_index < 0) {
-        p2000t_video_render_no_signal_scanline(
-            scanline_buffer, y, display_state.no_signal_artwork);
+        p2000t_video_render_no_signal_scanline(scanline_buffer, y,
+                                               display_state.no_signal_artwork);
         return;
     }
     p2000t_video_render_source_scanline(scanline_buffer, display_state.frame,
@@ -401,8 +413,7 @@ static void print_status(void) {
     const uint32_t id_gaps = load_statistic(&vga_statistics.scanline_id_gaps);
     const uint32_t sequence =
         load_statistic(&vga_statistics.displayed_sequence);
-    const uint32_t artwork =
-        load_statistic(&vga_statistics.no_signal_artwork);
+    const uint32_t artwork = load_statistic(&vga_statistics.no_signal_artwork);
 
     printf("VID2VGA captured=%" PRIu32 " locked=%s period=",
            capture.captured_frames, capture.signal_present ? "yes" : "no");
@@ -416,29 +427,32 @@ static void print_status(void) {
                rate_millihz % 1000u);
     }
     printf(" first_line=%" PRIu32 " h_offset=%" PRIu32 " phase=%" PRId32
+           " odd_phase=%" PRId32 " rate_trim=%" PRId32 " reconstruction=%s"
            " stale=%" PRIu32 " vga=%" PRIu32 " swaps=%" PRIu32
            " repeats=%" PRIu32 " lost=%" PRIu32 " id_gaps=%" PRIu32
            " displayed=%" PRIu32 " artwork=%" PRIu32 "\n",
            capture.first_visible_scanline, capture.horizontal_offset,
-           capture.sample_phase, capture.stale_frames_replaced, vga_frames,
-           swaps, repeats, lost, id_gaps, sequence, artwork + 1u);
+           capture.sample_phase, capture.odd_line_phase,
+           capture.sample_rate_trim,
+           p2000t_settings_sample_reconstruction(&current_settings) ==
+                   P2000T_CONTROL_SAMPLE_RECONSTRUCTION_SECOND_TAP
+               ? "second-tap"
+               : "raw",
+           capture.stale_frames_replaced, vga_frames, swaps, repeats, lost,
+           id_gaps, sequence, artwork + 1u);
 #if defined(PICO_RP2350) && PICO_RP2350
     p2000t_usb_stream_stats_t stream;
     p2000t_usb_stream_get_stats(&stream);
-    printf("USB screen frames=%" PRIu32 " no_signal=%" PRIu32
-           " bytes=%llu"
-           " raw=%" PRIu32 " packbits=%" PRIu32
-           " payload=%" PRIu32 " prepare=%" PRIu32 "/%" PRIu32
-           "us encode=%" PRIu32 "/%" PRIu32
+    printf("USB screen frames=%" PRIu32 " no_signal=%" PRIu32 " bytes=%llu"
+           " raw=%" PRIu32 " packbits=%" PRIu32 " payload=%" PRIu32
+           " prepare=%" PRIu32 "/%" PRIu32 "us encode=%" PRIu32 "/%" PRIu32
            "us tx=%" PRIu32 "/%" PRIu32 "us skipped=%" PRIu32 "\n",
            stream.frames_sent, stream.no_signal_records_sent,
-           (unsigned long long)stream.bytes_sent,
-           stream.raw_frames_sent,
+           (unsigned long long)stream.bytes_sent, stream.raw_frames_sent,
            stream.packbits_frames_sent, stream.last_payload_size,
            stream.last_prepare_us, stream.maximum_prepare_us,
-           stream.last_encode_us, stream.maximum_encode_us,
-           stream.last_tx_us, stream.maximum_tx_us,
-           stream.skipped_sequences);
+           stream.last_encode_us, stream.maximum_encode_us, stream.last_tx_us,
+           stream.maximum_tx_us, stream.skipped_sequences);
 #endif
 }
 
@@ -446,7 +460,10 @@ static void print_status(void) {
 static void print_help(void) {
     printf("Commands: s=status, [=image up, ]=image down, "
            "0=reset line, ,=sample earlier, .=sample later, "
-           "p=reset phase, <=start earlier, >=start later, "
+           "p=reset phase, ;=odd lines earlier, '=odd lines later, "
+           "o=reset odd-line phase, {=narrower, }=wider, w=reset width, "
+           "d=toggle source-dot reconstruction, "
+           "<=start earlier, >=start later, "
            "x=reset start, h=help\n");
     printf("No-connection artwork: 1=green phosphor, 2=synthwave, "
            "3=amber circuit\n");
@@ -464,8 +481,7 @@ static void enter_screen_mode(bool allow_packbits) {
            "flow=continuous exit=q\n",
            P2000T_STREAM_PROTOCOL_VERSION, P2000T_STREAM_WIDTH,
            P2000T_STREAM_HEIGHT, P2000T_STREAM_HEADER_SIZE,
-           P2000T_STREAM_PAYLOAD_SIZE,
-           allow_packbits ? "packbits+raw" : "raw");
+           P2000T_STREAM_PAYLOAD_SIZE, allow_packbits ? "packbits+raw" : "raw");
     stdio_flush();
     p2000t_usb_stream_start(allow_packbits);
 }
@@ -481,13 +497,31 @@ static void select_no_signal_artwork(p2000t_no_signal_artwork_t artwork,
                                      bool quiet) {
     hard_assert((unsigned)artwork < P2000T_NO_SIGNAL_ARTWORK_COUNT);
     store_statistic(&requested_no_signal_artwork, (uint32_t)artwork);
-    current_settings.no_signal_artwork = (uint8_t)artwork;
+    p2000t_settings_set_artwork(&current_settings, (unsigned)artwork);
     static const char *const names[P2000T_NO_SIGNAL_ARTWORK_COUNT] = {
         "green phosphor", "synthwave", "amber circuit"};
     if (!quiet) {
         printf("No-connection artwork %u selected: %s. "
                "Applies at the next VGA frame.\n",
                (unsigned)artwork + 1u, names[artwork]);
+    }
+}
+
+/** Apply one validated raw/second-tap source-dot reconstruction mode. */
+static void select_sample_reconstruction(unsigned reconstruction, bool quiet) {
+    hard_assert(reconstruction < P2000T_CONTROL_SAMPLE_RECONSTRUCTION_COUNT);
+    p2000t_settings_set_sample_reconstruction(&current_settings,
+                                              reconstruction);
+    const bool second_tap =
+        reconstruction == P2000T_CONTROL_SAMPLE_RECONSTRUCTION_SECOND_TAP;
+    p2000t_video_renderer_set_second_tap_reconstruction(second_tap);
+#if defined(PICO_RP2350) && PICO_RP2350
+    p2000t_usb_stream_set_second_tap_reconstruction(second_tap);
+#endif
+    if (!quiet) {
+        printf("Source-dot reconstruction set to %s; applies at the next "
+               "VGA frame.\n",
+               second_tap ? "duplicate second tap" : "raw dual tap");
     }
 }
 
@@ -537,7 +571,61 @@ static void adjust_sample_phase(int change, bool quiet) {
     current_settings.sample_phase = (int16_t)requested;
     if (!quiet) {
         printf("Sample phase set to %+d (positive is later); "
-               "one tick is 7.94 ns and it applies on the next source frame.\n",
+               "one tick is nominally 7.94 ns and it applies on the next "
+               "source frame.\n",
+               requested);
+    }
+}
+
+/**
+ * @brief Adjust odd-numbered source lines relative to even-numbered lines.
+ *
+ * @param change Signed number of 7.94 ns capture ticks to add.
+ * @param quiet Suppress console text while a binary stream is active.
+ */
+static void adjust_odd_line_phase(int change, bool quiet) {
+    p2000t_capture_stats_t capture;
+    p2000t_capture_get_stats(&capture);
+    const int requested = capture.odd_line_phase + change;
+    if (!p2000t_capture_set_odd_line_phase(requested)) {
+        if (!quiet) {
+            printf("Odd-line phase must remain between %d and %d.\n",
+                   P2000T_MIN_ODD_LINE_PHASE, P2000T_MAX_ODD_LINE_PHASE);
+        }
+        return;
+    }
+    current_settings.odd_line_phase = (int8_t)requested;
+    if (!quiet) {
+        printf(
+            "Odd-line phase set to %+d (positive is later); "
+            "one tick is nominally 7.94 ns and it applies on the next source "
+            "frame.\n",
+            requested);
+    }
+}
+
+/**
+ * @brief Adjust the complete horizontal sampling interval.
+ *
+ * @param change Signed number of 1/256 PIO-divider steps to add.
+ * @param quiet Suppress console text while a binary stream is active.
+ */
+static void adjust_sample_rate_trim(int change, bool quiet) {
+    p2000t_capture_stats_t capture;
+    p2000t_capture_get_stats(&capture);
+    const int requested = capture.sample_rate_trim + change;
+    if (!p2000t_capture_set_sample_rate_trim(requested)) {
+        if (!quiet) {
+            printf("Horizontal rate trim must remain between %d and %d.\n",
+                   P2000T_MIN_SAMPLE_RATE_TRIM, P2000T_MAX_SAMPLE_RATE_TRIM);
+        }
+        return;
+    }
+    p2000t_settings_set_sample_rate_trim(&current_settings, requested);
+    if (!quiet) {
+        printf("Horizontal rate trim set to %+d (positive is wider); "
+               "one step moves the right edge by about 0.94 sample and "
+               "applies on the next source frame.\n",
                requested);
     }
 }
@@ -558,8 +646,7 @@ static void adjust_horizontal_offset(int change, bool quiet) {
         if (!quiet) {
             printf("Horizontal start must remain between %u and %u "
                    "source dots.\n",
-                   P2000T_MIN_HORIZONTAL_OFFSET,
-                   P2000T_MAX_HORIZONTAL_OFFSET);
+                   P2000T_MIN_HORIZONTAL_OFFSET, P2000T_MAX_HORIZONTAL_OFFSET);
         }
         return;
     }
@@ -651,6 +738,49 @@ static void handle_usb_command(int command) {
             }
         }
         break;
+    case ';':
+        adjust_odd_line_phase(-1, quiet);
+        break;
+    case '\'':
+        adjust_odd_line_phase(1, quiet);
+        break;
+    case 'o':
+    case 'O':
+        if (p2000t_capture_set_odd_line_phase(P2000T_DEFAULT_ODD_LINE_PHASE)) {
+            current_settings.odd_line_phase = P2000T_DEFAULT_ODD_LINE_PHASE;
+            if (!quiet) {
+                printf("Odd-line phase reset to %d.\n",
+                       P2000T_DEFAULT_ODD_LINE_PHASE);
+            }
+        }
+        break;
+    case '{':
+        adjust_sample_rate_trim(-1, quiet);
+        break;
+    case '}':
+        adjust_sample_rate_trim(1, quiet);
+        break;
+    case 'w':
+    case 'W':
+        if (p2000t_capture_set_sample_rate_trim(
+                P2000T_DEFAULT_SAMPLE_RATE_TRIM)) {
+            p2000t_settings_set_sample_rate_trim(
+                &current_settings, P2000T_DEFAULT_SAMPLE_RATE_TRIM);
+            if (!quiet) {
+                printf("Horizontal rate trim reset to %d.\n",
+                       P2000T_DEFAULT_SAMPLE_RATE_TRIM);
+            }
+        }
+        break;
+    case 'd':
+    case 'D':
+        select_sample_reconstruction(
+            p2000t_settings_sample_reconstruction(&current_settings) ==
+                    P2000T_CONTROL_SAMPLE_RECONSTRUCTION_RAW
+                ? P2000T_CONTROL_SAMPLE_RECONSTRUCTION_SECOND_TAP
+                : P2000T_CONTROL_SAMPLE_RECONSTRUCTION_RAW,
+            quiet);
+        break;
     case '<':
         adjust_horizontal_offset(-P2000T_HORIZONTAL_OFFSET_STEP, quiet);
         break;
@@ -721,12 +851,13 @@ static void queue_configuration_state(void) {
         payload[5] |= P2000T_CONFIGURATION_FLAG_SAVE_FAILED;
     }
     control_store_u16(&payload[6], sizeof(payload));
-    control_store_u16(&payload[8],
-                      current_settings.first_visible_scanline);
-    control_store_u16(&payload[10],
-                      (uint16_t)current_settings.sample_phase);
+    control_store_u16(&payload[8], current_settings.first_visible_scanline);
+    control_store_u16(&payload[10], (uint16_t)current_settings.sample_phase);
     control_store_u16(&payload[12], current_settings.horizontal_offset);
-    payload[14] = current_settings.no_signal_artwork;
+    payload[P2000T_CONFIGURATION_CAPTURE_OPTIONS_OFFSET] =
+        current_settings.capture_options;
+    payload[P2000T_CONFIGURATION_ODD_LINE_PHASE_OFFSET] =
+        (uint8_t)current_settings.odd_line_phase;
     for (unsigned index = 0; index < P2000T_CONTROL_PALETTE_COLORS; ++index) {
         control_store_u16(
             &payload[P2000T_CONFIGURATION_PALETTE_OFFSET + index * 2u],
@@ -742,9 +873,14 @@ static void apply_settings(const p2000t_settings_t *settings) {
     p2000t_capture_set_first_visible_scanline(
         current_settings.first_visible_scanline);
     p2000t_capture_set_sample_phase(current_settings.sample_phase);
+    p2000t_capture_set_odd_line_phase(current_settings.odd_line_phase);
+    p2000t_capture_set_sample_rate_trim(
+        p2000t_settings_sample_rate_trim(&current_settings));
     p2000t_capture_set_horizontal_offset(current_settings.horizontal_offset);
+    select_sample_reconstruction(
+        p2000t_settings_sample_reconstruction(&current_settings), true);
     store_statistic(&requested_no_signal_artwork,
-                    current_settings.no_signal_artwork);
+                    p2000t_settings_artwork(&current_settings));
     p2000t_video_renderer_set_source_palette(current_settings.palette);
 }
 
@@ -771,6 +907,29 @@ static void handle_control_packet(void) {
         }
         break;
     }
+    case P2000T_CONTROL_SET_ODD_LINE_PHASE: {
+        const int32_t phase = (int32_t)value;
+        if (phase >= P2000T_CONTROL_MIN_ODD_LINE_PHASE &&
+            phase <= P2000T_CONTROL_MAX_ODD_LINE_PHASE &&
+            p2000t_capture_set_odd_line_phase((int)phase)) {
+            current_settings.odd_line_phase = (int8_t)phase;
+        }
+        break;
+    }
+    case P2000T_CONTROL_SET_SAMPLE_RATE_TRIM: {
+        const int32_t trim = (int32_t)value;
+        if (trim >= P2000T_CONTROL_MIN_SAMPLE_RATE_TRIM &&
+            trim <= P2000T_CONTROL_MAX_SAMPLE_RATE_TRIM &&
+            p2000t_capture_set_sample_rate_trim((int)trim)) {
+            p2000t_settings_set_sample_rate_trim(&current_settings, (int)trim);
+        }
+        break;
+    }
+    case P2000T_CONTROL_SET_SAMPLE_RECONSTRUCTION:
+        if (value < P2000T_CONTROL_SAMPLE_RECONSTRUCTION_COUNT) {
+            select_sample_reconstruction((unsigned)value, true);
+        }
+        break;
     case P2000T_CONTROL_SET_HORIZONTAL:
         if (value <= P2000T_CONTROL_MAX_HORIZONTAL &&
             value % P2000T_CONTROL_HORIZONTAL_STEP == 0u &&
@@ -780,7 +939,7 @@ static void handle_control_packet(void) {
         break;
     case P2000T_CONTROL_SET_ARTWORK:
         if (value < P2000T_NO_SIGNAL_ARTWORK_COUNT) {
-            current_settings.no_signal_artwork = (uint8_t)value;
+            p2000t_settings_set_artwork(&current_settings, (unsigned)value);
             store_statistic(&requested_no_signal_artwork, value);
         }
         break;
@@ -788,8 +947,7 @@ static void handle_control_packet(void) {
         if (argument < P2000T_CONTROL_PALETTE_COLORS &&
             value <= P2000T_CONTROL_RGB444_MAX) {
             current_settings.palette[argument] = (uint16_t)value;
-            p2000t_video_renderer_set_source_palette(
-                current_settings.palette);
+            p2000t_video_renderer_set_source_palette(current_settings.palette);
         }
         break;
     case P2000T_CONTROL_SAVE_SETTINGS:
@@ -860,8 +1018,12 @@ static void poll_usb_commands(void) {
                 (command >= '1' && command <= '3') || command == '[' ||
                 command == '-' || command == ']' || command == '+' ||
                 command == '0' || command == ',' || command == '.' ||
-                command == 'p' || command == 'P' || command == '<' ||
-                command == '>' || command == 'x' || command == 'X';
+                command == 'p' || command == 'P' || command == ';' ||
+                command == '\'' || command == 'o' || command == 'O' ||
+                command == '{' || command == '}' || command == 'w' ||
+                command == 'W' || command == 'd' || command == 'D' ||
+                command == '<' || command == '>' || command == 'x' ||
+                command == 'X';
             if (!stream_command && !configuration_command) {
                 continue;
             }
@@ -926,6 +1088,8 @@ int main(void) {
     }
     p2000t_video_renderer_initialize();
     p2000t_video_renderer_set_source_palette(current_settings.palette);
+    select_sample_reconstruction(
+        p2000t_settings_sample_reconstruction(&current_settings), true);
 
     /* Scanvideo owns PIO0 and its fixed DMA channel. Capture then claims PIO1
        and two otherwise-unused DMA channels. */
@@ -936,9 +1100,12 @@ int main(void) {
     p2000t_capture_set_first_visible_scanline(
         current_settings.first_visible_scanline);
     p2000t_capture_set_sample_phase(current_settings.sample_phase);
+    p2000t_capture_set_odd_line_phase(current_settings.odd_line_phase);
+    p2000t_capture_set_sample_rate_trim(
+        p2000t_settings_sample_rate_trim(&current_settings));
     p2000t_capture_set_horizontal_offset(current_settings.horizontal_offset);
     store_statistic(&requested_no_signal_artwork,
-                    current_settings.no_signal_artwork);
+                    p2000t_settings_artwork(&current_settings));
     multicore_launch_core1(vga_core_main);
     if (multicore_fifo_pop_blocking() != VGA_READY_MAGIC) {
         panic("Unable to start VGA rendering core");

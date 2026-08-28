@@ -32,6 +32,7 @@ enum {
     /**< Byte offset from the asset start to its packed pixel data. */
     NO_SIGNAL_PACKED_BYTES_PER_LINE = P2000T_VGA_RENDER_WIDTH / 2,
     /**< Two four-bit palette indices are stored in each source byte. */
+    SOURCE_RECONSTRUCTION_MODES = 2,
 };
 
 _Static_assert(VGA_LEFT_MARGIN == 80 && VGA_RIGHT_MARGIN == 80,
@@ -56,13 +57,14 @@ static const uint16_t default_source_colors[8] = {
 };
 
 /** Triple-buffered decoded colors for frame-atomic palette updates. */
-static uint32_t raw_byte_color_tables[3][256];
+static uint32_t raw_byte_color_tables[3][SOURCE_RECONSTRUCTION_MODES][256];
 static volatile uint32_t requested_raw_color_table;
 static volatile uint32_t active_raw_color_table;
+static volatile uint32_t requested_second_tap_reconstruction;
+static volatile uint32_t active_second_tap_reconstruction;
 
 /** Two RGB444 pixels for each packed pair in each artwork palette. */
-static uint32_t
-    no_signal_byte_colors[P2000T_NO_SIGNAL_ARTWORK_COUNT][256];
+static uint32_t no_signal_byte_colors[P2000T_NO_SIGNAL_ARTWORK_COUNT][256];
 
 /**
  * @brief Resolve an artwork selection to its flash-resident asset.
@@ -153,8 +155,7 @@ static void __not_in_flash_func(render_no_signal_text)(
  * @param color RGB444 pictogram color.
  */
 static void __not_in_flash_func(render_no_signal_icon)(uint16_t *tokens,
-                                                       unsigned y,
-                                                       unsigned top,
+                                                       unsigned y, unsigned top,
                                                        uint16_t color) {
     if (y < top || y >= top + NO_SIGNAL_ICON_HEIGHT) {
         return;
@@ -213,8 +214,9 @@ static void __not_in_flash_func(render_no_signal_icon)(uint16_t *tokens,
     }
 }
 
-static void build_source_color_table(uint32_t *table,
-                                     const uint16_t colors[8]) {
+static void
+build_source_color_tables(uint32_t tables[SOURCE_RECONSTRUCTION_MODES][256],
+                          const uint16_t colors[8]) {
     uint16_t raw_nibble_colors[16];
     for (unsigned raw = 0; raw < 16u; ++raw) {
         const unsigned color =
@@ -224,16 +226,19 @@ static void build_source_color_table(uint32_t *table,
         raw_nibble_colors[raw] = colors[color];
     }
     for (unsigned raw = 0; raw < 256u; ++raw) {
-        table[raw] =
-            raw_nibble_colors[raw >> 4u] |
-            ((uint32_t)raw_nibble_colors[raw & 0x0fu] << 16u);
+        tables[0][raw] = raw_nibble_colors[raw >> 4u] |
+                         ((uint32_t)raw_nibble_colors[raw & 0x0fu] << 16u);
+        const uint32_t second = raw_nibble_colors[raw & 0x0fu];
+        tables[1][raw] = second | (second << 16u);
     }
 }
 
 void p2000t_video_renderer_initialize(void) {
-    build_source_color_table(raw_byte_color_tables[0], default_source_colors);
+    build_source_color_tables(raw_byte_color_tables[0], default_source_colors);
     requested_raw_color_table = 0u;
     active_raw_color_table = 0u;
+    requested_second_tap_reconstruction = 0u;
+    active_second_tap_reconstruction = 0u;
 
     /* Expand all three tiny flash-resident palettes into SRAM. Selection can
      * then change at a frame boundary without rebuilding a table or adding
@@ -261,14 +266,23 @@ void p2000t_video_renderer_set_source_palette(const uint16_t colors[8]) {
         ++next;
     }
     hard_assert(next < 3u);
-    build_source_color_table(raw_byte_color_tables[next], colors);
+    build_source_color_tables(raw_byte_color_tables[next], colors);
     __atomic_store_n(&requested_raw_color_table, next, __ATOMIC_RELEASE);
+}
+
+void p2000t_video_renderer_set_second_tap_reconstruction(bool enabled) {
+    __atomic_store_n(&requested_second_tap_reconstruction, enabled ? 1u : 0u,
+                     __ATOMIC_RELEASE);
 }
 
 void p2000t_video_renderer_begin_frame(void) {
     const uint32_t requested =
         __atomic_load_n(&requested_raw_color_table, __ATOMIC_ACQUIRE);
     __atomic_store_n(&active_raw_color_table, requested, __ATOMIC_RELEASE);
+    const uint32_t reconstruction =
+        __atomic_load_n(&requested_second_tap_reconstruction, __ATOMIC_ACQUIRE);
+    __atomic_store_n(&active_second_tap_reconstruction, reconstruction,
+                     __ATOMIC_RELEASE);
 }
 
 void __not_in_flash_func(p2000t_video_render_no_signal_scanline)(
@@ -282,8 +296,7 @@ void __not_in_flash_func(p2000t_video_render_no_signal_scanline)(
     const uint8_t *image = no_signal_image(artwork);
     const uint32_t *color_pairs = no_signal_byte_colors[artwork];
     const uint8_t *image_row =
-        &image[NO_SIGNAL_PALETTE_BYTES +
-               y * NO_SIGNAL_PACKED_BYTES_PER_LINE];
+        &image[NO_SIGNAL_PALETTE_BYTES + y * NO_SIGNAL_PACKED_BYTES_PER_LINE];
     uint16_t *tokens = (uint16_t *)scanline_buffer->data;
     tokens[0] = COMPOSABLE_RAW_RUN;
     const uint32_t first_pair = color_pairs[image_row[0]];
@@ -296,8 +309,7 @@ void __not_in_flash_func(p2000t_video_render_no_signal_scanline)(
      * instead of copying 1,280 bytes of RGB444 data before the VGA deadline. */
     hard_assert(((uintptr_t)&tokens[4] & 3u) == 0u);
     uint32_t *destination = (uint32_t *)&tokens[4];
-    for (unsigned index = 1; index < NO_SIGNAL_PACKED_BYTES_PER_LINE;
-         ++index) {
+    for (unsigned index = 1; index < NO_SIGNAL_PACKED_BYTES_PER_LINE; ++index) {
         *destination++ = color_pairs[image_row[index]];
     }
     hard_assert(destination ==
@@ -332,8 +344,9 @@ void __not_in_flash_func(p2000t_video_render_source_scanline)(
         *destination++ = 0x0000;
     }
     const uint32_t *source = frame + source_y * P2000T_CAPTURE_WORDS_PER_LINE;
-    const uint32_t *raw_byte_colors = raw_byte_color_tables[
-        __atomic_load_n(&active_raw_color_table, __ATOMIC_RELAXED)];
+    const uint32_t *raw_byte_colors = raw_byte_color_tables
+        [__atomic_load_n(&active_raw_color_table, __ATOMIC_RELAXED)]
+        [__atomic_load_n(&active_second_tap_reconstruction, __ATOMIC_RELAXED)];
     hard_assert(((uintptr_t)destination & 3u) == 0u);
     uint32_t *packed_destination = (uint32_t *)destination;
     for (unsigned word_index = 0; word_index < P2000T_CAPTURE_WORDS_PER_LINE;

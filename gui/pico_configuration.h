@@ -16,6 +16,9 @@
 struct PicoConfiguration {
     int vertical = P2000T_CONTROL_DEFAULT_VERTICAL;
     int phase = P2000T_CONTROL_DEFAULT_PHASE;
+    int oddLinePhase = P2000T_CONTROL_DEFAULT_ODD_LINE_PHASE;
+    int sampleRateTrim = P2000T_CONTROL_DEFAULT_SAMPLE_RATE_TRIM;
+    int sampleReconstruction = P2000T_CONTROL_DEFAULT_SAMPLE_RECONSTRUCTION;
     int horizontal = P2000T_CONTROL_DEFAULT_HORIZONTAL;
     int artwork = P2000T_CONTROL_DEFAULT_ARTWORK;
     std::array<quint16, P2000T_CONTROL_PALETTE_COLORS> palette = {

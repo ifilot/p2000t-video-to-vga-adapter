@@ -26,9 +26,14 @@ enum {
     REQUIRED_SYSTEM_CLOCK_HZ = 252000000,
     /**< System clock required for exact capture and VGA frequencies. */
     CAPTURE_PIO_CLOCK_HZ = 126000000,
-    /**< Effective clock driving the capture state machine. */
+    /**< Nominal clock driving the capture state machine at trim zero. */
     CAPTURE_CLOCK_DIVIDER = 2,
     /**< Integer divider from the system clock to capture PIO. */
+    CAPTURE_CLOCK_DIVIDER_FRACTION = 0,
+    /**< Nominal fractional divider in 1/256 steps. */
+    NOMINAL_CAPTURE_CLOCK_DIVIDER_FIXED =
+        CAPTURE_CLOCK_DIVIDER * 256 + CAPTURE_CLOCK_DIVIDER_FRACTION,
+    /**< Nominal PIO divider in the hardware's 16:8 fixed-point format. */
     CAPTURE_BUFFER_COUNT = 3,
     /**< Buffers used for filling, ready, and displayed frame states. */
     CAPTURE_TX_COMMAND_COUNT = 2 + 2 * P2000T_CAPTURE_HEIGHT,
@@ -48,6 +53,16 @@ enum {
        PIO clocks. Subtract it so pixel sampling retains its original phase. */
     HORIZONTAL_SYNC_QUALIFICATION_TICKS = 33,
     /**< Qualified-edge delay compensated in each line command. */
+    FIRST_LINE_SYNC_COMPENSATION_TICKS =
+        HORIZONTAL_SYNC_QUALIFICATION_TICKS - 1,
+    /**< Initial edge-counting path enters the delay one tick later. */
+    QUALIFIED_LINE_START_OVERHEAD_TICKS = 45,
+    /**< PIO clocks from detected sync through the first sample, excluding
+         the programmable delay-loop count. */
+    FIRST_LINE_START_OVERHEAD_TICKS =
+        QUALIFIED_LINE_START_OVERHEAD_TICKS -
+        FIRST_LINE_SYNC_COMPENSATION_TICKS,
+    /**< Corresponding overhead for the initial edge-counting path. */
     NOMINAL_PHASE_DELAY_COUNT = 111,
     /**< Baseline fine-delay loop count at phase zero. */
     MINIMUM_FRAME_PERIOD_US = 19000,
@@ -125,8 +140,17 @@ static uint64_t last_frame_time_us;
 /** Configured one-based source line at which visible capture starts. */
 static unsigned first_visible_scanline = P2000T_DEFAULT_FIRST_VISIBLE_SCANLINE;
 
-/** Fine horizontal sampling phase in 126 MHz PIO clock ticks. */
+/** Fine horizontal sampling phase in nominal 126 MHz PIO clock ticks. */
 static int sample_phase = P2000T_DEFAULT_SAMPLE_PHASE;
+
+/** Extra phase applied only to odd-numbered physical source lines. */
+static int odd_line_phase = P2000T_DEFAULT_ODD_LINE_PHASE;
+
+/** Signed 1/256 addition to the nominal capture PIO clock divider. */
+static int sample_rate_trim = P2000T_DEFAULT_SAMPLE_RATE_TRIM;
+
+/** Divider trim currently programmed into the running capture state machine. */
+static int applied_sample_rate_trim = P2000T_DEFAULT_SAMPLE_RATE_TRIM;
 
 /** Coarse horizontal sampling offset in nominal source dots. */
 static unsigned horizontal_offset = P2000T_DEFAULT_HORIZONTAL_OFFSET;
@@ -161,6 +185,25 @@ static bool sequence_is_newer(uint32_t candidate, uint32_t reference) {
 }
 
 /**
+ * @brief Keep the first sample anchored while changing the PIO divider.
+ *
+ * The divider affects both the 480-sample span and all preceding PIO delay
+ * instructions. Scaling the sync-to-first-sample cycle count inversely leaves
+ * the start fixed, making rate trim an independent right-edge adjustment.
+ */
+static uint32_t rate_compensated_start_delay(int nominal_command,
+                                             unsigned overhead_ticks) {
+    const int active_divider =
+        NOMINAL_CAPTURE_CLOCK_DIVIDER_FIXED + sample_rate_trim;
+    const int nominal_total = nominal_command + (int)overhead_ticks;
+    const int compensated_total =
+        (nominal_total * NOMINAL_CAPTURE_CLOCK_DIVIDER_FIXED +
+         active_divider / 2) /
+        active_divider;
+    return (uint32_t)(compensated_total - (int)overhead_ticks);
+}
+
+/**
  * @brief Refresh the PIO TX commands for the next captured frame.
  *
  * This is called only while the prior frame's TX DMA transfer is exhausted.
@@ -174,11 +217,21 @@ static void update_tx_commands(void) {
                    (int)horizontal_offset * CAPTURE_TICKS_PER_SOURCE_DOT +
                    sample_phase);
     for (unsigned line = 0; line < P2000T_CAPTURE_HEIGHT; ++line) {
+        const unsigned source_scanline = first_visible_scanline + line;
+        const int parity_phase =
+            (source_scanline & 1u) != 0u ? odd_line_phase : 0;
         /* The first visible line arrives through the initial sync-counting
-           path and therefore has not incurred the qualified-edge delay. */
-        tx_commands[2u + line * 2u] =
-            qualified_start_delay +
-            (line == 0u ? HORIZONTAL_SYNC_QUALIFICATION_TICKS : 0u);
+           path. It enters line_start_delay 32 rather than 33 clocks before
+           the qualified path because skip_got_edge itself takes one tick. */
+        const bool first_line = line == 0u;
+        const int nominal_command =
+            (int)qualified_start_delay +
+            (first_line ? FIRST_LINE_SYNC_COMPENSATION_TICKS : 0) +
+            parity_phase;
+        tx_commands[2u + line * 2u] = rate_compensated_start_delay(
+            nominal_command,
+            first_line ? FIRST_LINE_START_OVERHEAD_TICKS
+                       : QUALIFIED_LINE_START_OVERHEAD_TICKS);
         tx_commands[3u + line * 2u] = SOURCE_DOT_LOOP_COUNT;
     }
 }
@@ -195,6 +248,20 @@ static void arm_capture_frame(void) {
     dma_channel_set_trans_count(capture_tx_dma, CAPTURE_TX_COMMAND_COUNT,
                                 false);
     dma_start_channel_mask((1u << capture_rx_dma) | (1u << capture_tx_dma));
+}
+
+/** Apply a validated signed fractional adjustment to the PIO divider. */
+static void apply_sample_rate_trim(void) {
+    if (applied_sample_rate_trim == sample_rate_trim) {
+        return;
+    }
+    const int fixed_divider =
+        NOMINAL_CAPTURE_CLOCK_DIVIDER_FIXED + sample_rate_trim;
+    pio_sm_set_clkdiv_int_frac8(capture_pio, capture_sm,
+                                (unsigned)fixed_divider >> 8u,
+                                (uint8_t)fixed_divider);
+    pio_sm_clkdiv_restart(capture_pio, capture_sm);
+    applied_sample_rate_trim = sample_rate_trim;
 }
 
 /**
@@ -257,9 +324,15 @@ static void __not_in_flash_func(capture_dma_irq)(void) {
 
     capture_fill_index = choose_next_fill_buffer();
     buffer_states[capture_fill_index] = BUFFER_FILLING;
-    update_tx_commands();
     spin_unlock(buffer_lock, saved);
 
+    /* The VGA core needs buffer_lock at its frame boundary. Rebuilding all
+       240 line commands while holding it can make scanvideo miss a physical
+       line deadline and substitute its blank fallback scanline. Settings are
+       changed only by core 0 outside interrupt context, so they cannot change
+       between this IRQ's unlock and return. */
+    update_tx_commands();
+    apply_sample_rate_trim();
     arm_capture_frame();
 }
 
@@ -283,7 +356,8 @@ static void initialize_capture_pio(void) {
     sm_config_set_in_pins(&config, P2000T_INPUT_PIN_BASE);
     sm_config_set_jmp_pin(&config, P2000T_SYNC_PIN);
     sm_config_set_in_shift(&config, false, true, 32);
-    sm_config_set_clkdiv_int_frac8(&config, CAPTURE_CLOCK_DIVIDER, 0);
+    sm_config_set_clkdiv_int_frac8(&config, CAPTURE_CLOCK_DIVIDER,
+                                   CAPTURE_CLOCK_DIVIDER_FRACTION);
     pio_sm_set_consecutive_pindirs(capture_pio, capture_sm,
                                    P2000T_INPUT_PIN_BASE, 4, false);
     pio_sm_init(capture_pio, capture_sm, program_offset, &config);
@@ -434,6 +508,8 @@ void p2000t_capture_get_stats(p2000t_capture_stats_t *stats) {
         .last_frame_period_us = last_frame_period_us,
         .first_visible_scanline = first_visible_scanline,
         .sample_phase = sample_phase,
+        .odd_line_phase = odd_line_phase,
+        .sample_rate_trim = sample_rate_trim,
         .horizontal_offset = horizontal_offset,
         .signal_present =
             timing_is_locked(now, last_frame_time_us, last_frame_period_us),
@@ -458,6 +534,28 @@ bool p2000t_capture_set_sample_phase(int phase) {
     }
     const uint32_t saved = spin_lock_blocking(buffer_lock);
     sample_phase = phase;
+    spin_unlock(buffer_lock, saved);
+    return true;
+}
+
+bool p2000t_capture_set_odd_line_phase(int phase) {
+    if (phase < P2000T_MIN_ODD_LINE_PHASE ||
+        phase > P2000T_MAX_ODD_LINE_PHASE) {
+        return false;
+    }
+    const uint32_t saved = spin_lock_blocking(buffer_lock);
+    odd_line_phase = phase;
+    spin_unlock(buffer_lock, saved);
+    return true;
+}
+
+bool p2000t_capture_set_sample_rate_trim(int trim) {
+    if (trim < P2000T_MIN_SAMPLE_RATE_TRIM ||
+        trim > P2000T_MAX_SAMPLE_RATE_TRIM) {
+        return false;
+    }
+    const uint32_t saved = spin_lock_blocking(buffer_lock);
+    sample_rate_trim = trim;
     spin_unlock(buffer_lock, saved);
     return true;
 }
