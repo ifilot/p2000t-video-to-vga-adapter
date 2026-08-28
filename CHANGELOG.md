@@ -73,9 +73,10 @@ Notable project changes are recorded here.
 - Calibration sweeps now request an explicit complete setting state, retry a
   missing acknowledgement with a bounded timeout, report mismatched values,
   and remember the last selected analysis parent directory.
-- Capture PIO and DMA are explicitly re-armed after a flash settings write so
-  windowed acquisition resumes even when line completions occurred while
-  flash-safe execution had paused interrupt service.
+- Capture PIO and DMA are quiesced before a flash settings write, window lookup
+  state is rebuilt while DMA remains stopped, and acquisition restarts at a
+  clean frame boundary. This prevents flash-safe interrupt pauses from
+  corrupting window-center reconstruction or stopping capture.
 - Capture-buffer ownership now permits a short-lived Pico 2 USB reader without
   exposing a buffer that DMA may overwrite or changing the Pico/RP2040 memory
   footprint.

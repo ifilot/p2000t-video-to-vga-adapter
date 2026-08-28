@@ -1055,6 +1055,7 @@ static void handle_control_packet(void) {
         }
         break;
     case P2000T_CONTROL_SAVE_SETTINGS:
+        p2000t_capture_pause_for_flash();
         settings_save_failed = !p2000t_settings_save(
             &current_settings, current_reconstruction_mode);
         p2000t_capture_resume_after_flash();

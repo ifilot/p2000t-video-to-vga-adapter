@@ -133,13 +133,10 @@ typedef struct {
  */
 void p2000t_capture_start(void);
 
-/**
- * @brief Re-arm capture after a flash-safe operation paused interrupt service.
- *
- * Flash erase/program can span one or more window-line DMA completions. Call
- * this from core 0 after the flash-safe operation returns so a coalesced or
- * lost completion cannot leave the ping-pong capture engine stopped.
- */
+/** Stop PIO and DMA before a flash-safe operation pauses interrupt service. */
+void p2000t_capture_pause_for_flash(void);
+
+/** Rebuild window state and restart capture after a flash-safe operation. */
 void p2000t_capture_resume_after_flash(void);
 
 /**

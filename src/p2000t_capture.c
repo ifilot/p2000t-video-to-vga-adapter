@@ -755,9 +755,29 @@ void p2000t_capture_start(void) {
     capture_started = true;
 }
 
-void p2000t_capture_resume_after_flash(void) {
+void p2000t_capture_pause_for_flash(void) {
     hard_assert(capture_started);
     irq_set_enabled(DMA_IRQ_1, false);
+    pio_sm_set_enabled(capture_pio, capture_sm, false);
+    dma_channel_abort(capture_rx_dma);
+#if defined(PICO_RP2350) && PICO_RP2350
+    dma_channel_abort(capture_window_rx_dma);
+#endif
+    dma_channel_abort(capture_tx_dma);
+    dma_hw->ints1 = 1u << capture_rx_dma;
+#if defined(PICO_RP2350) && PICO_RP2350
+    dma_hw->ints1 = 1u << capture_window_rx_dma;
+#endif
+}
+
+void p2000t_capture_resume_after_flash(void) {
+    hard_assert(capture_started);
+#if defined(PICO_RP2350) && PICO_RP2350
+    /* Rebuilding the deterministic tables while DMA is stopped repairs stale
+       state left by an earlier capture transaction and makes the restart
+       independent of the interrupted frame. */
+    initialize_window_lookup_tables();
+#endif
     configure_capture_engine();
     update_tx_commands();
     apply_sample_rate_trim();
