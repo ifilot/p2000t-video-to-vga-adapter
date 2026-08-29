@@ -44,13 +44,17 @@ if(NOT PICO_EXTRAS_PATH)
 endif()
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/pico_extras_import.cmake")
 
-project(p2000t_vid2vga_firmware VERSION 0.4.0 LANGUAGES C CXX ASM)
+project(p2000t_vid2vga_firmware VERSION 0.4.1 LANGUAGES C CXX ASM)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
 option(P2000T_PROTOTYPE_V1_MIRRORED_DIN
     "Use the mirrored DIN wiring of the assembled prototype-v1 PCB/cable"
+    ON)
+
+option(P2000T_WINDOW_CAPTURE_ENABLED
+    "Enable the RP2350 line-sliced six-tap capture engine"
     ON)
 
 pico_sdk_init()

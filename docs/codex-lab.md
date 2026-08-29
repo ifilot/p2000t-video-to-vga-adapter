@@ -24,6 +24,7 @@ From the repository root:
 ```sh
 python3 tools/p2000t_lab.py status
 python3 tools/p2000t_lab.py save
+python3 tools/p2000t_lab.py factory-reset
 python3 tools/p2000t_lab.py experiment \
   --phase -2 --odd-phase 1 --rate-trim 2 \
   --reconstruction window-early --settle 3 --frames 40 \
@@ -49,7 +50,9 @@ Successful settings remain active for the next adaptive step; an error,
 cancellation, signal loss, or disconnection restores the settings which were
 active before that experiment. The separate, explicit `save` command persists
 the current live tuple and succeeds only after the Pico reports that it matches
-the stored tuple.
+the stored tuple. `factory-reset` restores the firmware's known-good tuple,
+palette, and artwork, persists them immediately, and likewise waits for a
+matching saved-state acknowledgement.
 
 ## Directory protocol
 
@@ -79,8 +82,8 @@ An experiment request has protocol version 1:
 }
 ```
 
-Valid commands are `status`, `experiment`, `diagnostic`, `save`, `cancel`, and
-`shutdown`.
+Valid commands are `status`, `experiment`, `diagnostic`, `save`,
+`factory-reset`, `cancel`, and `shutdown`.
 Ranges are validated before any firmware command is sent. Every setting tuple
 is followed by an explicit firmware state request; capture starts only after
 the Pico reports the complete requested tuple. Missing acknowledgements are
@@ -103,20 +106,18 @@ larger of 32 changed pixels and four times the median frame mismatch count.
 Frames above that threshold remain logged as `coherent_outlier_frames` rather
 than silently disappearing from the ordinary instability total.
 
-Every `frames.csv` row records the active engine, samples per output pixel,
-corrected and ambiguous sample counts, corrections per RGB channel, and whether
-the line-rate capture deadline was missed. `result.json` also aggregates those
-values. A window-mode result with a nonzero `deadline_miss_frames` count is not
-valid for image-quality comparison and should be investigated as a real-time
-capture failure.
+Every `frames.csv` row records the Pico capture-completion timestamp and host
+UTC receipt time, active engine, samples per output pixel, corrected and
+ambiguous sample counts, corrections per RGB channel, and whether a capture
+deadline was missed. `result.json` also aggregates those values.
 
 Bridge experiments remain non-persistent. Flash is changed only by an explicit
-`save` command or the ordinary configuration UI, both of which save supported
-reconstruction modes in v0.4.0. Pico 2 uses raw reconstruction, phase -1,
-odd-line +1, and rate trim 0 as its power-on and factory default when no valid
-saved record is present. Continuous window modes remain unavailable until
-their line-rate reconstruction no longer starves VGA scanout; the original
-Pico retains raw phase-zero defaults.
+`save` or `factory-reset` command or the ordinary configuration UI. Pico 2
+v0.4.1 uses line-sliced `window-late`, phase 0, odd-line +1, and rate trim 0 as
+its power-on and factory default when no valid saved record is present. The
+engine is available in ordinary Pico 2 release builds after whole-screen and
+physical VGA validation. Existing saved settings remain authoritative until an
+explicit `factory-reset`; the original Pico retains raw phase-zero defaults.
 
 The transport test can run without hardware: a `status` request still returns
 viewer state, while an experiment is explicitly rejected as unavailable when

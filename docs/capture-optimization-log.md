@@ -5,6 +5,93 @@ during the withdrawn confidence-guard candidate validation. Candidate firmware
 is kept only when it improves temporal stability without modal-image damage,
 capture deadline failures, or host-test regressions.
 
+## 2026-08-29 — v0.4.1 whole-screen default
+
+A second animated teletext page exposed severe blue-on-white text instability:
+the raw phase -1 tuple changed an average 148.3 pixels per captured frame in
+that panel, with 280 pixels in the worst frame. Optimizing only that panel led
+to `window-early`, phase -2, which made the panel perfectly stable but increased
+white-caption instability from 7.3 to 41.4 pixels per frame and visibly damaged
+other blue/white transitions. It was rejected as an overfit.
+
+The complete screen was then divided into title, mosaic, blue-on-white text,
+white-on-blue text, animated prompt, and footer bands. Intentional prompt
+animation was tracked separately. The balanced `window-late`, phase 0, physical
+odd correction +1, rate trim 0 candidate produced the following 100-frame
+result:
+
+| Region | Raw changes/frame | v0.4.1 changes/frame |
+|---|---:|---:|
+| Title | 16.2 | 9.1 |
+| Mosaic | 50.3 | 32.7 |
+| Blue-on-white text | 148.3 | 22.8 |
+| White-on-blue text | 7.3 | 5.1 |
+| Footer | 6.4 | 2.8 |
+
+Run `experiment-20260829-071058-e1868a06` completed 100 frames with zero
+deadline misses and 70 modal mismatches across 115,200 pixels. The physical VGA
+screen retained sync and the user accepted the complete screen, including both
+text polarities and the mosaic boundary. This tuple replaces the v0.4.0 raw
+fallback as the Pico 2 v0.4.1 factory default; Pico 1 remains unchanged.
+
+## 2026-08-29 — line-sliced reconstruction and live VGA recovery
+
+The complete-frame capture was retained, but its monolithic 240-line decode
+was replaced with one source line per core-0 service slice. This bounds each
+reconstruction burst to 720 source bytes, 240 destination bytes, and lookup
+traffic before returning control. The physical engineering image remained
+visible throughout both validation runs; unlike the prior batch, VGA did not
+lose signal. The slower decoder deliberately misses source-frame boundaries,
+so window timing accepts periods up to 85 ms while raw timing remains limited
+to 19–21.2 ms.
+
+| Run | Tuple | Frames | Robust ppm | Reference mismatch | Decision |
+|---|---|---:|---:|---:|---|
+| `experiment-20260829-064815-9533c047` | confidence, phase 0, odd +1 | 20 | 128.35 | 28 pixels | VGA checkpoint passed |
+| `experiment-20260829-064935-043262fb` | confidence, phase 0, odd +1 | 100 | 149.19 | 26 pixels | Keep experimental |
+| `experiment-20260829-064957-4a03cece` | raw, phase -1, odd +1 | 100 | 142.67 | exact reference | Retain factory tuple |
+
+All three runs reported zero deadline misses. The short window run looked
+promising, but the matched 100-frame comparison favored raw by 6.52 ppm. The
+line-sliced engine therefore solves the VGA/SRAM failure without yet providing
+a universal image-quality gain.
+
+## 2026-08-29 — v0.4.1 frame-batched reconstruction
+
+The former line-rate six-tap engine was replaced with complete-frame DMA into
+the logic analyzer's shared scratch SRAM followed by one batched decode. This
+removes reconstruction from the 64 us source-line deadline. The USB stream
+remained valid, reported no deadline misses, and protocol-v4 manifests carried
+nonzero Pico capture timestamps throughout the trials.
+
+| Run | Tuple | Robust ppm | Reference mismatch | Decision |
+|---|---|---:|---:|---|
+| `experiment-20260829-060858-fc4c7788` | raw, phase -1, odd +1 | 141.98 | reference | Retain factory tuple |
+| `experiment-20260829-061500-6bdb5bf9` | confidence, phase 0, odd +1 | 158.22 | 2 recolored pixels vs yesterday | Exact geometry; no temporal win |
+| `experiment-20260829-061558-eb1baade` | confidence, phase -1, odd +1 | 282.87 | 186 pixels | Reject |
+| `experiment-20260829-061611-56253322` | confidence, phase +1, odd +1 | 202.65 | 46 pixels | Reject |
+| `experiment-20260829-061624-d8eaee63` | confidence, phase 0, odd 0 | 190.70 | 35 pixels | Reject |
+
+The batched confidence result reproduces the withdrawn candidate's sharp modal
+geometry to within two source pixels, but it misses the immediately following
+vertical acquisition opportunity and therefore captures at approximately 25
+source frames per second. The viewer receives every second capture at roughly
+80.37 ms intervals. Because it did not beat the stable raw tuple's temporal
+score on the current engineering page, it remains selectable engineering code
+rather than the v0.4.1 factory setting.
+
+The USB factory-reset path was tested after applying a deliberately non-default
+live tuple. One command restored raw reconstruction, phase -1, physical odd
+phase +1, and rate trim 0, persisted them, and returned a configuration state
+with both `stored_available` and `matches_stored` set.
+
+Final live VGA checkpoint `experiment-20260829-062421-33b6b09d` overruled the
+otherwise healthy USB evidence: while frame-batched `window-confidence` was
+active, the physical VGA monitor lost signal. USB continued receiving valid
+frames. Issuing `factory-reset` restored raw/two-tap capture, valid signal, and
+the saved known-good tuple. All window modes are consequently gated off in the
+v0.4.1 release candidate.
+
 ## 2026-08-29 — stable v0.4.0 recovery
 
 Live hardware testing separated two independent symptoms. The six-tap window

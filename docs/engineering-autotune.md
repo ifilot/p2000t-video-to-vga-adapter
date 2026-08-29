@@ -68,8 +68,8 @@ Each run creates `p2000t-autotune-YYYYMMDD-HHMMSS` beneath the selected parent:
 
 - `session.json`: viewer version, run parameters, original settings, source
   line parity mapping, reconstruction constraint, and score formula;
-- `frames.csv`: exact setting, stage, source-frame sequence, UTC timestamp, and
-  filename for every retained PNG;
+- `frames.csv`: exact setting, stage, source-frame sequence, Pico capture
+  timestamp, host UTC receipt time, and filename for every retained PNG;
 - `candidates.csv`: raw and normalized temporal/spatial metrics for every
   candidate plus its modal PNG filename;
 - `modal_*.png`: temporal modal image for every candidate;

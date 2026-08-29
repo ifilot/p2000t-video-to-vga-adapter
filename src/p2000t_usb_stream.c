@@ -60,6 +60,7 @@ static bool last_display_state_valid;
 static bool last_signal_present;
 static bool tx_signal_present;
 static uint32_t tx_sequence;
+static uint64_t tx_capture_timestamp_us;
 static uint32_t last_sequence;
 static uint8_t last_no_signal_artwork;
 static uint8_t tx_no_signal_artwork;
@@ -86,6 +87,11 @@ static void store_u32(uint8_t *destination, uint32_t value) {
     destination[1] = (uint8_t)(value >> 8u);
     destination[2] = (uint8_t)(value >> 16u);
     destination[3] = (uint8_t)(value >> 24u);
+}
+
+static void store_u64(uint8_t *destination, uint64_t value) {
+    store_u32(destination, (uint32_t)value);
+    store_u32(destination + 4u, (uint32_t)(value >> 32u));
 }
 
 /** Standard reflected CRC-32 with a compact nibble lookup table. */
@@ -201,7 +207,9 @@ static void build_header(uint32_t sequence, uint32_t checksum) {
                            : (tx_packbits ? P2000T_STREAM_ENCODING_PACKBITS
                                           : P2000T_STREAM_ENCODING_RAW);
     if (tx_configuration) {
-        store_u16(&stream_header[6], P2000T_STREAM_FLAG_CONFIGURATION_STATE);
+        store_u16(&stream_header[6],
+                  P2000T_STREAM_FLAG_CONFIGURATION_STATE |
+                      P2000T_STREAM_FLAG_CAPTURE_TIMESTAMP_US);
         store_u16(&stream_header[22], P2000T_STREAM_HEADER_SIZE);
         store_u32(&stream_header[24], (uint32_t)tx_payload_size);
         store_u32(&stream_header[28], checksum);
@@ -210,11 +218,14 @@ static void build_header(uint32_t sequence, uint32_t checksum) {
             tx_configuration_payload
                 [P2000T_CONFIGURATION_CAPTURE_OPTIONS_OFFSET] &
             P2000T_CONFIGURATION_ARTWORK_MASK;
+        store_u64(&stream_header[P2000T_STREAM_CAPTURE_TIMESTAMP_US_OFFSET],
+                  tx_capture_timestamp_us);
         return;
     }
     uint16_t flags = P2000T_STREAM_FLAG_PLANAR_RGB111 |
                      P2000T_STREAM_FLAG_PIXELS_MSB_FIRST |
-                     P2000T_STREAM_FLAG_TIMING_DIAGNOSTICS;
+                     P2000T_STREAM_FLAG_TIMING_DIAGNOSTICS |
+                     P2000T_STREAM_FLAG_CAPTURE_TIMESTAMP_US;
     if (tx_signal_present) {
         flags |= P2000T_STREAM_FLAG_SIGNAL_PRESENT;
     }
@@ -257,6 +268,8 @@ static void build_header(uint32_t sequence, uint32_t checksum) {
               tx_reconstruction_diagnostics.green_corrections);
     store_u32(&stream_header[P2000T_STREAM_BLUE_CORRECTIONS_OFFSET],
               tx_reconstruction_diagnostics.blue_corrections);
+    store_u64(&stream_header[P2000T_STREAM_CAPTURE_TIMESTAMP_US_OFFSET],
+              tx_capture_timestamp_us);
 }
 
 static void begin_no_signal_record(unsigned no_signal_artwork) {
@@ -266,6 +279,7 @@ static void begin_no_signal_record(unsigned no_signal_artwork) {
     tx_configuration = false;
     tx_payload_size = 0u;
     tx_sequence = last_sequence_valid ? last_sequence : 0u;
+    tx_capture_timestamp_us = time_us_64();
     tx_header_offset = 0u;
     tx_payload_offset = 0u;
     packbits_input_offset = 0u;
@@ -297,6 +311,7 @@ static void begin_configuration_record(void) {
     packbits_staging_size = 0u;
     packbits_staging_offset = 0u;
     tx_encode_us = 0u;
+    tx_capture_timestamp_us = time_us_64();
     build_header(last_sequence_valid ? last_sequence : 0u,
                  frame_crc32(tx_configuration_payload,
                              sizeof(tx_configuration_payload)));
@@ -326,8 +341,10 @@ static void begin_available_frame(bool signal_present,
     }
 
     uint32_t sequence = 0u;
+    uint64_t capture_timestamp_us = 0u;
     const int buffer_index =
-        p2000t_capture_acquire_latest_frame_for_usb(&sequence);
+        p2000t_capture_acquire_latest_frame_for_usb(&sequence,
+                                                    &capture_timestamp_us);
     if (buffer_index < 0) {
         return;
     }
@@ -368,6 +385,7 @@ static void begin_available_frame(bool signal_present,
     }
 
     tx_sequence = sequence;
+    tx_capture_timestamp_us = capture_timestamp_us;
     tx_signal_present = true;
     tx_no_signal_artwork = (uint8_t)no_signal_artwork;
     tx_header_offset = 0u;

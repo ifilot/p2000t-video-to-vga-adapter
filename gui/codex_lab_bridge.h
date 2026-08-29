@@ -18,6 +18,7 @@ enum class CodexLabCommand {
     Experiment,
     Diagnostic,
     Save,
+    FactoryReset,
     Cancel,
     Shutdown
 };

@@ -131,7 +131,8 @@ void p2000t_settings_defaults(p2000t_settings_t *settings,
 #if defined(PICO_RP2350) && PICO_RP2350
     settings->sample_phase = P2000T_CONTROL_PICO2_DEFAULT_PHASE;
     settings->odd_line_phase = P2000T_CONTROL_PICO2_DEFAULT_ODD_LINE_PHASE;
-    *reconstruction = P2000T_CONTROL_DEFAULT_SAMPLE_RECONSTRUCTION;
+    *reconstruction =
+        P2000T_CONTROL_PICO2_DEFAULT_SAMPLE_RECONSTRUCTION;
 #else
     settings->sample_phase = P2000T_CONTROL_DEFAULT_PHASE;
     settings->odd_line_phase = P2000T_CONTROL_DEFAULT_ODD_LINE_PHASE;
@@ -142,7 +143,7 @@ void p2000t_settings_defaults(p2000t_settings_t *settings,
     p2000t_settings_set_sample_rate_trim(
         settings, P2000T_CONTROL_DEFAULT_SAMPLE_RATE_TRIM);
     p2000t_settings_set_sample_reconstruction(
-        settings, P2000T_CONTROL_DEFAULT_SAMPLE_RECONSTRUCTION);
+        settings, *reconstruction);
     memcpy(settings->palette, default_palette, sizeof(default_palette));
 }
 

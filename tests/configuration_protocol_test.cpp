@@ -8,6 +8,7 @@
 #include <QByteArray>
 
 #include "pico_configuration.h"
+#include "p2000t_stream_protocol.h"
 
 namespace {
 
@@ -26,6 +27,11 @@ void storeU32(char *destination, quint32 value) {
 } // namespace
 
 int main() {
+    static_assert(P2000T_STREAM_LEGACY_PROTOCOL_VERSION == 3);
+    static_assert(P2000T_STREAM_PROTOCOL_VERSION == 4);
+    static_assert(P2000T_STREAM_LEGACY_HEADER_SIZE == 64);
+    static_assert(P2000T_STREAM_CAPTURE_TIMESTAMP_US_OFFSET + 8 ==
+                  P2000T_STREAM_HEADER_SIZE);
     const QByteArray packet = makePicoControlPacket(P2000T_CONTROL_SET_PHASE, 0,
                                                     static_cast<quint32>(-7));
     assert(packet.size() == P2000T_CONTROL_PACKET_SIZE);

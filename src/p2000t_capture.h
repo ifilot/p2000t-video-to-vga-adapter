@@ -16,12 +16,16 @@
 
 #include "p2000t_reconstruction.h"
 
+#ifndef P2000T_WINDOW_CAPTURE_ENABLED
+#define P2000T_WINDOW_CAPTURE_ENABLED 0
+#endif
+
 /** Capture geometry, adjustment limits, and conditioned input pin mapping. */
 enum {
-    /* Six-tap line reconstruction currently starves continuous VGA scanout.
-       Keep it unavailable until reconstruction is moved out of the line-rate
-       IRQ path. */
-    P2000T_CAPTURE_WINDOW_REALTIME_SAFE = 0,
+    /* Line-rate and monolithic frame-batch decoding disrupted VGA scanout.
+       The line-sliced replacement passed whole-screen live validation. */
+    P2000T_CAPTURE_WINDOW_REALTIME_SAFE =
+        P2000T_WINDOW_CAPTURE_ENABLED != 0,
     P2000T_CAPTURE_WIDTH = 480,
     /**< Raw samples per line; two per nominal 6 MHz source dot. */
     P2000T_CAPTURE_HEIGHT = 240,
@@ -137,6 +141,17 @@ typedef struct {
  */
 void p2000t_capture_start(void);
 
+#if defined(PICO_RP2350) && PICO_RP2350
+/**
+ * @brief Perform one bounded slice of deferred six-tap reconstruction.
+ *
+ * The firmware main loop calls this frequently so a complete frame is decoded
+ * without monopolizing SRAM long enough to disrupt VGA scanout on core 1.
+ * @return true while more lines from the current frame remain to be decoded.
+ */
+bool p2000t_capture_service(void);
+#endif
+
 /** Stop PIO and DMA before a flash-safe operation pauses interrupt service. */
 void p2000t_capture_pause_for_flash(void);
 
@@ -167,10 +182,12 @@ int p2000t_capture_acquire_latest_frame(uint32_t *sequence);
  * Pico 2 packs an independent USB snapshot.
  *
  * @param sequence Output location for the held frame's sequence number.
+ * @param timestamp_us Pico monotonic capture-completion time for that frame.
  * @return Capture-buffer index, or -1 when no complete frame is available.
  */
 #if defined(PICO_RP2350) && PICO_RP2350
-int p2000t_capture_acquire_latest_frame_for_usb(uint32_t *sequence);
+int p2000t_capture_acquire_latest_frame_for_usb(uint32_t *sequence,
+                                                uint64_t *timestamp_us);
 #endif
 
 /**

@@ -189,6 +189,8 @@ bool CodexLabBridge::decodeRequest(const QByteArray &payload,
         result.command = CodexLabCommand::Status;
     } else if (command == QStringLiteral("save")) {
         result.command = CodexLabCommand::Save;
+    } else if (command == QStringLiteral("factory-reset")) {
+        result.command = CodexLabCommand::FactoryReset;
     } else if (command == QStringLiteral("cancel")) {
         result.command = CodexLabCommand::Cancel;
     } else if (command == QStringLiteral("shutdown")) {
@@ -281,7 +283,7 @@ bool CodexLabBridge::decodeRequest(const QByteArray &payload,
         if (error != nullptr) {
             *error = QStringLiteral(
                 "command must be status, experiment, diagnostic, save, "
-                "cancel, or shutdown");
+                "factory-reset, cancel, or shutdown");
         }
         return false;
     }

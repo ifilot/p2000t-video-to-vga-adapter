@@ -989,6 +989,19 @@ static void apply_settings(const p2000t_settings_t *settings,
     p2000t_video_renderer_set_source_palette(current_settings.palette);
 }
 
+/** Persist the complete live tuple and refresh the authoritative flash copy. */
+static void persist_current_settings(void) {
+    p2000t_capture_pause_for_flash();
+    settings_save_failed = !p2000t_settings_save(
+        &current_settings, current_reconstruction_mode);
+    p2000t_capture_resume_after_flash();
+    if (!settings_save_failed) {
+        stored_settings = current_settings;
+        stored_reconstruction_mode = current_reconstruction_mode;
+        stored_settings_valid = true;
+    }
+}
+
 static void handle_control_packet(void) {
     const uint8_t opcode = control_packet[3];
     const uint8_t argument = control_packet[4];
@@ -1031,6 +1044,12 @@ static void handle_control_packet(void) {
         break;
     }
     case P2000T_CONTROL_SET_SAMPLE_RECONSTRUCTION:
+#if defined(PICO_RP2350) && PICO_RP2350
+        if (p2000t_diagnostics_active() &&
+            value >= P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_FIRST) {
+            break;
+        }
+#endif
         if (value < P2000T_CONTROL_SAMPLE_RECONSTRUCTION_COUNT) {
             select_sample_reconstruction((unsigned)value, true);
         }
@@ -1056,15 +1075,7 @@ static void handle_control_packet(void) {
         }
         break;
     case P2000T_CONTROL_SAVE_SETTINGS:
-        p2000t_capture_pause_for_flash();
-        settings_save_failed = !p2000t_settings_save(
-            &current_settings, current_reconstruction_mode);
-        p2000t_capture_resume_after_flash();
-        if (!settings_save_failed) {
-            stored_settings = current_settings;
-            stored_reconstruction_mode = current_reconstruction_mode;
-            stored_settings_valid = true;
-        }
+        persist_current_settings();
         break;
     case P2000T_CONTROL_LOAD_SETTINGS:
         if (stored_settings_valid) {
@@ -1076,6 +1087,9 @@ static void handle_control_packet(void) {
         unsigned default_reconstruction;
         p2000t_settings_defaults(&defaults, &default_reconstruction);
         apply_settings(&defaults, default_reconstruction);
+        /* Factory reset is deliberately persistent: it must recover a Pico
+           from any saved but undesirable tuning with one USB operation. */
+        persist_current_settings();
         break;
     }
 #if defined(PICO_RP2350) && PICO_RP2350
@@ -1227,9 +1241,8 @@ int main(void) {
         current_settings = stored_settings;
         current_reconstruction_mode = stored_reconstruction_mode;
     }
-    /* Older experimental records may request the line-rate six-tap engine.
-       It can starve continuous VGA scanout even while capture remains locked.
-       Migrate those records to the safe two-tap renderer at boot. */
+    /* Builds without a safe window implementation must never revive an older
+       experimental six-tap selection from flash. */
     if (!P2000T_CAPTURE_WINDOW_REALTIME_SAFE &&
         current_reconstruction_mode >=
             P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_FIRST) {
@@ -1245,11 +1258,9 @@ int main(void) {
         current_reconstruction_mode >=
         P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_FIRST;
     if (defer_window_engine) {
-        /* Always bootstrap through the proven full-frame two-tap engine.
-           Starting directly in the line-rate ping-pong engine can leave it
-           waiting for a completion that occurred before its IRQ was ready.
-           A completed two-tap frame then performs the normal, frame-boundary
-           transition into the requested window mode. */
+        /* Bootstrap through the proven two-tap engine. A completed frame then
+           performs the normal frame-boundary transition into the requested
+           batched window mode after VGA startup is fully established. */
         hard_assert(p2000t_capture_set_reconstruction_mode(
             P2000T_CONTROL_SAMPLE_RECONSTRUCTION_RAW));
     }
@@ -1285,12 +1296,20 @@ int main(void) {
 
     bool announced = false;
     while (true) {
+#if defined(PICO_RP2350) && PICO_RP2350
+        const bool capture_work_pending = p2000t_capture_service();
+#endif
         const bool signal_present =
             load_statistic(&vga_statistics.signal_present) != 0u;
         status_led_service(signal_present);
         if (!stdio_usb_connected()) {
             announced = false;
+#if defined(PICO_RP2350) && PICO_RP2350
+            sleep_us(capture_work_pending ? 100u
+                                          : STATUS_LED_SERVICE_INTERVAL_US);
+#else
             sleep_us(STATUS_LED_SERVICE_INTERVAL_US);
+#endif
             continue;
         }
         if (!announced) {

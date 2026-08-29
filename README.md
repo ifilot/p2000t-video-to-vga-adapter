@@ -69,20 +69,23 @@ Each phase tick is nominally 7.94 ns. Each rate step changes the PIO divider by
 1/256 and moves the right edge by approximately 0.94 captured pixel while
 leaving the sync-anchored left edge in place. Positive odd-line phase samples
 odd physical source lines later; positive rate trim widens every line. Pico 2
-v0.4.0 factory defaults use raw/two-tap reconstruction with phase `-1`,
-odd-line correction `+1`, and rate trim `0`; this is the validated stable tuple
-which preserves sharp source geometry. The original Pico retains raw
-reconstruction with phase-zero defaults.
+v0.4.1 Pico 2 factory defaults use line-sliced `window-late` reconstruction
+with phase `0`, odd-line correction `+1`, and rate trim `0`. The tuple was
+validated against the complete animated teletext test page, including its
+blue/white mosaic boundaries and both text polarities. The original Pico
+retains raw reconstruction with phase-zero defaults.
 
 Raw reconstruction exposes both 12 MHz samples in every nominal 6 MHz
 SAA5050 source dot. Guarded-second-tap reconstruction uses the later sample
 for both corresponding VGA pixels unless it matches neither the first tap nor
 the following dot's first tap; that isolated intermediate color is replaced
-by the current dot's first tap. The complete reconstruction selection remains
-represented in the v0.4.0 flash record for compatibility. Continuous Pico 2
-window modes are temporarily unavailable because their line-rate SRAM traffic
-can starve VGA scanout; existing saved window selections are safely migrated
-to raw at boot. Existing v0.3.x saved settings are migrated when next saved.
+by the current dot's first tap. Pico 2 window reconstruction captures a complete
+high-resolution frame and decodes one source line per main-loop service slice;
+this retained physical VGA output during live USB validation. It is enabled by
+default on Pico 2 and can be omitted from a specialized build with
+`-DP2000T_WINDOW_CAPTURE_ENABLED=OFF`. Existing explicitly saved settings remain
+authoritative until the user invokes factory reset. Existing v0.3.x records are
+migrated when next saved.
 
 For a measured source period near 20092 us, start with rate trim `+2`. The
 left-edge compensation allows the existing sample phase to remain unchanged;
@@ -93,7 +96,10 @@ On Pico 2, `c` starts the recommended continuous PackBits screen stream and
 `r` starts an uncompressed stream. Press `q` or Escape to stop binary mode and
 return to the console. The alignment and artwork commands remain available
 silently while a binary stream is active, allowing the desktop viewer to
-configure the adapter without interrupting capture. 
+configure the adapter without interrupting capture. Stream protocol v4 adds a
+64-bit Pico monotonic capture-completion timestamp to every record; the v0.4.1
+viewer also accepts legacy v3 records. Factory reset restores and immediately
+persists the known-good tuple, palette, and artwork in one USB operation.
 
 > [!NOTE] 
 > Screen streaming is intentionally excluded from the Pico/RP2040 build

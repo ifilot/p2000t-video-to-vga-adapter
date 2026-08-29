@@ -23,6 +23,7 @@
 #include "pico/stdlib.h"
 
 #if defined(PICO_RP2350) && PICO_RP2350
+#include "p2000t_shared_scratch.h"
 #include "p2000t_window_capture.pio.h"
 #endif
 
@@ -73,6 +74,11 @@ enum {
     /**< Shortest source frame period considered credible. */
     MAXIMUM_FRAME_PERIOD_US = 21200,
     /**< Longest source frame period considered credible. */
+#if defined(PICO_RP2350) && PICO_RP2350
+    MAXIMUM_BATCHED_FRAME_PERIOD_US = 85000,
+    /**< Line-sliced decoding can intentionally skip up to three source
+         frames while yielding SRAM bandwidth to VGA scanout. */
+#endif
     SIGNAL_LOSS_TIMEOUT_US = 100000,
 /**< Maximum age of the last complete frame before signal loss. */
 #if defined(PICO_RP2350) && PICO_RP2350
@@ -81,6 +87,8 @@ enum {
     WINDOW_SAMPLES_PER_SOURCE_DOT = 2 * WINDOW_SAMPLES_PER_OUTPUT,
     WINDOW_SAMPLES_PER_LINE = P2000T_CAPTURE_WIDTH * WINDOW_SAMPLES_PER_OUTPUT,
     WINDOW_WORDS_PER_LINE = WINDOW_SAMPLES_PER_LINE / 8,
+    WINDOW_WORDS_PER_FRAME = WINDOW_WORDS_PER_LINE * P2000T_CAPTURE_HEIGHT,
+    WINDOW_LOOKUP_SIZE = 4096,
     WINDOW_CENTER_ALIGNMENT_TICKS = 4,
 /**< Extra start delay aligning window centers to normal ticks 6 and 16. */
 #endif
@@ -106,6 +114,9 @@ _Static_assert(WINDOW_SAMPLES_PER_LINE % 8u == 0u,
                "Windowed lines must contain complete DMA words");
 _Static_assert(WINDOW_WORDS_PER_LINE == 180,
                "Six-tap scanlines must contain 180 packed words");
+_Static_assert((unsigned)WINDOW_WORDS_PER_FRAME <=
+                   (unsigned)P2000T_DIAGNOSTIC_TIMING_WORD_COUNT,
+               "Shared high-resolution scratch must hold a window frame");
 #endif
 
 /** PIO instance dedicated to RGBS capture. */
@@ -119,11 +130,6 @@ static bool capture_program_memory_claimed;
 
 /** DMA channel transferring packed PIO RX words into frame storage. */
 static int capture_rx_dma;
-
-#if defined(PICO_RP2350) && PICO_RP2350
-/** Second ping-pong RX channel used only by six-tap scanline capture. */
-static int capture_window_rx_dma;
-#endif
 
 /** DMA channel streaming per-frame commands into the PIO TX FIFO. */
 static int capture_tx_dma;
@@ -140,24 +146,29 @@ static p2000t_reconstruction_diagnostics_t
     buffer_diagnostics[CAPTURE_BUFFER_COUNT];
 
 #if defined(PICO_RP2350) && PICO_RP2350
-/** Two raw line buffers let DMA capture one line while the IRQ decodes one. */
-static uint32_t window_line_buffers[2][WINDOW_WORDS_PER_LINE]
-    __attribute__((aligned(4)));
-
 /** Evidence accumulated while the current six-tap frame is being decoded. */
 static p2000t_reconstruction_diagnostics_t current_window_diagnostics;
 
+/** Read only during the post-frame batch, never in the scanline cadence. */
+static uint32_t window_lookup_table[WINDOW_LOOKUP_SIZE];
+
 /** Evidence from the most recently published six-tap frame. */
 static p2000t_reconstruction_diagnostics_t last_window_diagnostics;
-
-/** Zero-based line expected from the next completed window DMA channel. */
-static unsigned window_completed_lines;
 
 /** Number of complete frames produced by the windowed engine. */
 static uint32_t windowed_frames;
 
 /** Total late or coalesced scanline completion observations. */
 static uint32_t line_deadline_misses;
+
+/** Whether a completed high-resolution frame awaits incremental decoding. */
+static bool window_decode_pending;
+
+/** Next high-resolution source line decoded by p2000t_capture_service(). */
+static unsigned window_decode_line;
+
+/** Hardware completion time retained while the frame is decoded in slices. */
+static uint64_t window_capture_timestamp_us;
 
 #endif
 
@@ -174,6 +185,9 @@ static bool buffer_usb_holds[CAPTURE_BUFFER_COUNT];
 
 /** Monotonic source-frame sequence assigned to each completed buffer. */
 static uint32_t buffer_sequences[CAPTURE_BUFFER_COUNT];
+
+/** Pico monotonic capture-completion time attached to each immutable frame. */
+static uint64_t buffer_timestamps_us[CAPTURE_BUFFER_COUNT];
 
 /** Index of the buffer currently targeted by capture RX DMA. */
 static unsigned capture_fill_index;
@@ -231,9 +245,17 @@ static unsigned horizontal_offset = P2000T_DEFAULT_HORIZONTAL_OFFSET;
  * @return true when a recent frame has an in-range period; otherwise false.
  */
 static bool timing_is_locked(uint64_t now, uint64_t last_frame_time,
-                             uint32_t frame_period) {
+                             uint32_t frame_period, unsigned capture_engine) {
+    uint32_t maximum_period = MAXIMUM_FRAME_PERIOD_US;
+#if defined(PICO_RP2350) && PICO_RP2350
+    if (capture_engine == P2000T_CAPTURE_ENGINE_WINDOWED) {
+        maximum_period = MAXIMUM_BATCHED_FRAME_PERIOD_US;
+    }
+#else
+    (void)capture_engine;
+#endif
     return last_frame_time != 0u && frame_period >= MINIMUM_FRAME_PERIOD_US &&
-           frame_period <= MAXIMUM_FRAME_PERIOD_US &&
+           frame_period <= maximum_period &&
            now - last_frame_time <= SIGNAL_LOSS_TIMEOUT_US;
 }
 
@@ -255,6 +277,25 @@ static bool sequence_is_newer(uint32_t candidate, uint32_t reference) {
 static bool reconstruction_uses_window(unsigned reconstruction) {
     return reconstruction >= P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_FIRST;
 }
+
+#if defined(PICO_RP2350) && PICO_RP2350
+/** Build the single policy needed by the next post-frame reconstruction. */
+static void initialize_window_lookup_table(unsigned reconstruction) {
+    const p2000t_window_policy_t policy =
+        reconstruction ==
+                P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_CONFIDENCE_GUARD
+            ? P2000T_WINDOW_POLICY_COLOR_LATE
+            : (p2000t_window_policy_t)(
+                  reconstruction -
+                  P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_FIRST);
+    for (unsigned packed = 0; packed < WINDOW_LOOKUP_SIZE; ++packed) {
+        window_lookup_table[packed] = p2000t_window_lookup_entry(
+            (uint8_t)(packed >> 8u), (uint8_t)(packed >> 4u),
+            (uint8_t)packed, policy, P2000T_RED_CHANNEL,
+            P2000T_GREEN_CHANNEL, P2000T_BLUE_CHANNEL);
+    }
+}
+#endif
 
 /**
  * @brief Keep the first sample anchored while changing the PIO divider.
@@ -328,20 +369,16 @@ static void arm_two_tap_capture_frame(void) {
 }
 
 #if defined(PICO_RP2350) && PICO_RP2350
-/** Arm the ping-pong scanline DMAs and the continuous frame command stream. */
+/** Arm one complete six-tap frame and its command stream. */
 static void arm_window_capture_frame(void) {
-    window_completed_lines = 0u;
     current_window_diagnostics = (p2000t_reconstruction_diagnostics_t){
         .reconstruction_mode = (uint8_t)active_reconstruction_mode,
         .capture_engine = P2000T_CAPTURE_ENGINE_WINDOWED,
         .samples_per_output = WINDOW_SAMPLES_PER_OUTPUT,
     };
-    dma_channel_set_write_addr(capture_rx_dma, window_line_buffers[0], false);
-    dma_channel_set_trans_count(capture_rx_dma, WINDOW_WORDS_PER_LINE, false);
-    dma_channel_set_write_addr(capture_window_rx_dma, window_line_buffers[1],
-                               false);
-    dma_channel_set_trans_count(capture_window_rx_dma, WINDOW_WORDS_PER_LINE,
-                                false);
+    dma_channel_set_write_addr(capture_rx_dma,
+                               p2000t_high_resolution_scratch, false);
+    dma_channel_set_trans_count(capture_rx_dma, WINDOW_WORDS_PER_FRAME, false);
     dma_channel_set_read_addr(capture_tx_dma, tx_commands, false);
     dma_channel_set_trans_count(capture_tx_dma, CAPTURE_TX_COMMAND_COUNT,
                                 false);
@@ -420,10 +457,13 @@ static void configure_capture_engine(void);
  * @brief Publish one complete buffer and prepare the active mode for another.
  *
  * @param diagnostics Evidence associated with the just-completed frame.
+ * @param capture_timestamp_us Hardware completion time, or zero to read now.
  */
 static void __not_in_flash_func(finish_capture_frame)(
-    const p2000t_reconstruction_diagnostics_t *diagnostics) {
-    const uint64_t now = time_us_64();
+    const p2000t_reconstruction_diagnostics_t *diagnostics,
+    uint64_t capture_timestamp_us) {
+    const uint64_t now = capture_timestamp_us != 0u ? capture_timestamp_us
+                                                    : time_us_64();
     const uint32_t saved = spin_lock_blocking(buffer_lock);
     if (last_frame_time_us != 0u) {
         last_frame_period_us = (uint32_t)(now - last_frame_time_us);
@@ -438,6 +478,7 @@ static void __not_in_flash_func(finish_capture_frame)(
     }
 #endif
     buffer_sequences[completed] = ++captured_frames;
+    buffer_timestamps_us[completed] = now;
     buffer_states[completed] = BUFFER_READY;
 
     capture_fill_index = choose_next_fill_buffer();
@@ -447,6 +488,10 @@ static void __not_in_flash_func(finish_capture_frame)(
                                           ? P2000T_CAPTURE_ENGINE_WINDOWED
                                           : P2000T_CAPTURE_ENGINE_TWO_TAP;
     const bool engine_changed = requested_engine != active_capture_engine;
+#if defined(PICO_RP2350) && PICO_RP2350
+    const bool reconstruction_changed =
+        requested != active_reconstruction_mode;
+#endif
     active_reconstruction_mode = requested;
     active_capture_engine = requested_engine;
     spin_unlock(buffer_lock, saved);
@@ -459,6 +504,12 @@ static void __not_in_flash_func(finish_capture_frame)(
     if (engine_changed) {
         configure_capture_engine();
     }
+#if defined(PICO_RP2350) && PICO_RP2350
+    if (reconstruction_changed &&
+        requested_engine == P2000T_CAPTURE_ENGINE_WINDOWED) {
+        initialize_window_lookup_table(requested);
+    }
+#endif
     update_tx_commands();
     apply_sample_rate_trim();
     arm_capture_frame();
@@ -471,14 +522,14 @@ static void __not_in_flash_func(reconstruct_window_line)(
     bool apply_confidence_guard) {
     if (active_reconstruction_mode ==
         P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_CONFIDENCE_GUARD) {
+        const uint32_t *lookup = window_lookup_table;
         if (!apply_confidence_guard) {
             for (unsigned group = 0; group < P2000T_CAPTURE_WORDS_PER_LINE;
                  ++group) {
-                destination[group] = p2000t_reconstruct_window_group_direct(
+                destination[group] = p2000t_reconstruct_window_group(
                     source[group * 3u], source[group * 3u + 1u],
-                    source[group * 3u + 2u], P2000T_WINDOW_POLICY_COLOR_LATE,
-                    &current_window_diagnostics, NULL, P2000T_RED_CHANNEL,
-                    P2000T_GREEN_CHANNEL, P2000T_BLUE_CHANNEL);
+                    source[group * 3u + 2u], lookup,
+                    &current_window_diagnostics);
             }
             return;
         }
@@ -486,90 +537,40 @@ static void __not_in_flash_func(reconstruct_window_line)(
              ++group) {
             uint8_t uncertainty = 0u;
             uint32_t reconstructed =
-                p2000t_reconstruct_window_group_direct(
+                p2000t_reconstruct_window_group_with_evidence(
                     source[group * 3u], source[group * 3u + 1u],
-                    source[group * 3u + 2u], P2000T_WINDOW_POLICY_COLOR_LATE,
-                    &current_window_diagnostics, &uncertainty,
-                    P2000T_RED_CHANNEL, P2000T_GREEN_CHANNEL,
-                    P2000T_BLUE_CHANNEL);
+                    source[group * 3u + 2u], lookup,
+                    &current_window_diagnostics, &uncertainty);
             reconstructed =
                 p2000t_guard_uncertain_pairs(reconstructed, uncertainty);
             destination[group] = reconstructed;
         }
         return;
     }
-    const p2000t_window_policy_t policy =
-        (p2000t_window_policy_t)(active_reconstruction_mode -
-                                 P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_FIRST);
+    const uint32_t *lookup = window_lookup_table;
     for (unsigned group = 0; group < P2000T_CAPTURE_WORDS_PER_LINE; ++group) {
-        destination[group] = p2000t_reconstruct_window_group_direct(
+        destination[group] = p2000t_reconstruct_window_group(
             source[group * 3u], source[group * 3u + 1u],
-            source[group * 3u + 2u], policy, &current_window_diagnostics, NULL,
-            P2000T_RED_CHANNEL, P2000T_GREEN_CHANNEL, P2000T_BLUE_CHANNEL);
+            source[group * 3u + 2u], lookup, &current_window_diagnostics);
     }
 }
 
-/** Service one or two completed ping-pong line buffers in chronological order.
- */
+/** Quiesce capture and defer high-resolution reconstruction to the main loop. */
 static void __not_in_flash_func(service_window_dma_irq)(uint32_t pending) {
     const uint32_t rx_mask = 1u << capture_rx_dma;
-    const uint32_t alternate_mask = 1u << capture_window_rx_dma;
-    const uint32_t relevant = pending & (rx_mask | alternate_mask);
-    dma_hw->ints1 = relevant;
+    dma_hw->ints1 = pending & rx_mask;
+    const uint64_t captured_at_us = time_us_64();
 
-    if (relevant == (rx_mask | alternate_mask)) {
-        ++current_window_diagnostics.line_deadline_misses;
-        ++line_deadline_misses;
-    }
+    /* Prevent a slow decode from allowing the next source frame to overflow
+       the RX FIFO. Rearming below begins again at a clean frame boundary. */
+    pio_sm_set_enabled(capture_pio, capture_sm, false);
+    dma_channel_abort(capture_tx_dma);
+    pio_sm_clear_fifos(capture_pio, capture_sm);
+    pio_sm_restart(capture_pio, capture_sm);
 
-    uint32_t remaining = relevant;
-    while (remaining != 0u && window_completed_lines < P2000T_CAPTURE_HEIGHT) {
-        const bool expected_alternate = (window_completed_lines & 1u) != 0u;
-        const int expected_channel =
-            expected_alternate ? capture_window_rx_dma : capture_rx_dma;
-        const uint32_t expected_mask = 1u << expected_channel;
-        int completed_channel = expected_channel;
-        if ((remaining & expected_mask) == 0u) {
-            completed_channel =
-                expected_alternate ? capture_rx_dma : capture_window_rx_dma;
-            ++current_window_diagnostics.line_deadline_misses;
-            ++line_deadline_misses;
-        }
-        const unsigned buffer = completed_channel == capture_rx_dma ? 0u : 1u;
-        const unsigned line_offset =
-            window_completed_lines * P2000T_CAPTURE_WORDS_PER_LINE;
-        reconstruct_window_line(
-            window_line_buffers[buffer],
-            &capture_buffers[capture_fill_index][line_offset],
-            (window_completed_lines & 1u) != 0u);
-        ++window_completed_lines;
-        remaining &= ~(1u << completed_channel);
-
-        if (window_completed_lines < P2000T_CAPTURE_HEIGHT) {
-            dma_channel_set_write_addr(completed_channel,
-                                       window_line_buffers[buffer], false);
-            dma_channel_set_trans_count(completed_channel,
-                                        WINDOW_WORDS_PER_LINE, false);
-        }
-    }
-
-    if (window_completed_lines == P2000T_CAPTURE_HEIGHT) {
-        dma_channel_abort(capture_rx_dma);
-        dma_channel_abort(capture_window_rx_dma);
-        ++windowed_frames;
-        finish_capture_frame(&current_window_diagnostics);
-    } else {
-        /* If both completions coalesced, the second channel attempted to chain
-           into a still-complete first channel. Restart the now-rearmed channel
-           explicitly so a transient CPU delay cannot permanently stop the
-           ping-pong pipeline. The ordinary one-line path is already busy. */
-        const int next_channel = (window_completed_lines & 1u) != 0u
-                                     ? capture_window_rx_dma
-                                     : capture_rx_dma;
-        if (!dma_channel_is_busy(next_channel)) {
-            dma_channel_start(next_channel);
-        }
-    }
+    window_capture_timestamp_us = captured_at_us;
+    window_decode_line = 0u;
+    window_decode_pending = true;
 }
 #endif
 
@@ -592,7 +593,7 @@ static void __not_in_flash_func(capture_dma_irq)(void) {
         .capture_engine = P2000T_CAPTURE_ENGINE_TWO_TAP,
         .samples_per_output = 1u,
     };
-    finish_capture_frame(&diagnostics);
+    finish_capture_frame(&diagnostics, 0u);
 }
 
 /**
@@ -664,9 +665,6 @@ static void load_capture_program(void) {
  */
 static void initialize_capture_dma_resources(void) {
     capture_rx_dma = dma_claim_unused_channel(true);
-#if defined(PICO_RP2350) && PICO_RP2350
-    capture_window_rx_dma = dma_claim_unused_channel(true);
-#endif
     capture_tx_dma = dma_claim_unused_channel(true);
 
     dma_channel_config tx = dma_channel_get_default_config(capture_tx_dma);
@@ -678,12 +676,9 @@ static void initialize_capture_dma_resources(void) {
                           tx_commands, CAPTURE_TX_COMMAND_COUNT, false);
 
     dma_channel_set_irq1_enabled(capture_rx_dma, true);
-#if defined(PICO_RP2350) && PICO_RP2350
-    dma_channel_set_irq1_enabled(capture_window_rx_dma, false);
-#endif
     irq_set_exclusive_handler(DMA_IRQ_1, capture_dma_irq);
-    /* Window reconstruction must finish before the next 64 us scanline DMA.
-       It runs on core 0 while VGA scanout remains isolated on core 1. */
+    /* Frame-batched reconstruction runs on core 0 after its RX DMA completes,
+       while VGA scanout remains isolated on core 1. */
     irq_set_priority(DMA_IRQ_1, 0x40);
     irq_set_enabled(DMA_IRQ_1, true);
 }
@@ -705,28 +700,18 @@ static void configure_rx_channel(int channel, void *destination,
 static void configure_capture_engine(void) {
     pio_sm_set_enabled(capture_pio, capture_sm, false);
     dma_channel_abort(capture_rx_dma);
-#if defined(PICO_RP2350) && PICO_RP2350
-    dma_channel_abort(capture_window_rx_dma);
-#endif
     dma_channel_abort(capture_tx_dma);
     dma_hw->ints1 = 1u << capture_rx_dma;
-#if defined(PICO_RP2350) && PICO_RP2350
-    dma_hw->ints1 = 1u << capture_window_rx_dma;
-#endif
     load_capture_program();
 
 #if defined(PICO_RP2350) && PICO_RP2350
     if (active_capture_engine == P2000T_CAPTURE_ENGINE_WINDOWED) {
-        configure_rx_channel(capture_rx_dma, window_line_buffers[0],
-                             WINDOW_WORDS_PER_LINE, capture_window_rx_dma);
-        configure_rx_channel(capture_window_rx_dma, window_line_buffers[1],
-                             WINDOW_WORDS_PER_LINE, capture_rx_dma);
+        configure_rx_channel(capture_rx_dma, p2000t_high_resolution_scratch,
+                             WINDOW_WORDS_PER_FRAME, capture_rx_dma);
         dma_channel_set_irq1_enabled(capture_rx_dma, true);
-        dma_channel_set_irq1_enabled(capture_window_rx_dma, true);
         pio_sm_set_enabled(capture_pio, capture_sm, true);
         return;
     }
-    dma_channel_set_irq1_enabled(capture_window_rx_dma, false);
 #endif
     configure_rx_channel(capture_rx_dma, capture_buffers[capture_fill_index],
                          P2000T_CAPTURE_WORDS_PER_FRAME, capture_rx_dma);
@@ -746,6 +731,11 @@ void p2000t_capture_start(void) {
         reconstruction_uses_window(active_reconstruction_mode)
             ? P2000T_CAPTURE_ENGINE_WINDOWED
             : P2000T_CAPTURE_ENGINE_TWO_TAP;
+#if defined(PICO_RP2350) && PICO_RP2350
+    if (active_capture_engine == P2000T_CAPTURE_ENGINE_WINDOWED) {
+        initialize_window_lookup_table(active_reconstruction_mode);
+    }
+#endif
     update_tx_commands();
 
     for (unsigned i = 0; i < CAPTURE_BUFFER_COUNT; ++i) {
@@ -754,6 +744,7 @@ void p2000t_capture_start(void) {
         buffer_usb_holds[i] = false;
 #endif
         buffer_sequences[i] = 0;
+        buffer_timestamps_us[i] = 0u;
         buffer_diagnostics[i] = (p2000t_reconstruction_diagnostics_t){0};
     }
     capture_fill_index = 0;
@@ -767,18 +758,45 @@ void p2000t_capture_start(void) {
     capture_started = true;
 }
 
+#if defined(PICO_RP2350) && PICO_RP2350
+bool p2000t_capture_service(void) {
+    if (!window_decode_pending) {
+        return false;
+    }
+
+    /* One source line is a deliberately small SRAM burst: 720 input bytes,
+       240 output bytes, and lookup-table reads. Returning after every line
+       gives scanvideo on core 1 regular arbitration opportunities. */
+    const unsigned line = window_decode_line;
+    reconstruct_window_line(
+        &p2000t_high_resolution_scratch[line * WINDOW_WORDS_PER_LINE],
+        &capture_buffers[capture_fill_index]
+                        [line * P2000T_CAPTURE_WORDS_PER_LINE],
+        (line & 1u) != 0u);
+    window_decode_line = line + 1u;
+    if (window_decode_line < P2000T_CAPTURE_HEIGHT) {
+        return true;
+    }
+
+    window_decode_pending = false;
+    ++windowed_frames;
+    finish_capture_frame(&current_window_diagnostics,
+                         window_capture_timestamp_us);
+    pio_sm_set_enabled(capture_pio, capture_sm, true);
+    return false;
+}
+#endif
+
 void p2000t_capture_pause_for_flash(void) {
     hard_assert(capture_started);
     irq_set_enabled(DMA_IRQ_1, false);
     pio_sm_set_enabled(capture_pio, capture_sm, false);
     dma_channel_abort(capture_rx_dma);
-#if defined(PICO_RP2350) && PICO_RP2350
-    dma_channel_abort(capture_window_rx_dma);
-#endif
     dma_channel_abort(capture_tx_dma);
     dma_hw->ints1 = 1u << capture_rx_dma;
 #if defined(PICO_RP2350) && PICO_RP2350
-    dma_hw->ints1 = 1u << capture_window_rx_dma;
+    window_decode_pending = false;
+    window_decode_line = 0u;
 #endif
 }
 
@@ -796,8 +814,9 @@ bool p2000t_capture_signal_present(void) {
     const uint32_t saved = spin_lock_blocking(buffer_lock);
     const uint64_t frame_time = last_frame_time_us;
     const uint32_t period = last_frame_period_us;
+    const unsigned engine = active_capture_engine;
     spin_unlock(buffer_lock, saved);
-    return timing_is_locked(now, frame_time, period);
+    return timing_is_locked(now, frame_time, period, engine);
 }
 
 int p2000t_capture_acquire_latest_frame(uint32_t *sequence) {
@@ -822,8 +841,10 @@ int p2000t_capture_acquire_latest_frame(uint32_t *sequence) {
 }
 
 #if defined(PICO_RP2350) && PICO_RP2350
-int p2000t_capture_acquire_latest_frame_for_usb(uint32_t *sequence) {
+int p2000t_capture_acquire_latest_frame_for_usb(uint32_t *sequence,
+                                                uint64_t *timestamp_us) {
     hard_assert(sequence != NULL);
+    hard_assert(timestamp_us != NULL);
     const uint32_t saved = spin_lock_blocking(buffer_lock);
     int latest = -1;
     uint32_t latest_sequence = 0;
@@ -840,6 +861,7 @@ int p2000t_capture_acquire_latest_frame_for_usb(uint32_t *sequence) {
     if (latest >= 0) {
         buffer_usb_holds[latest] = true;
         *sequence = latest_sequence;
+        *timestamp_us = buffer_timestamps_us[latest];
     }
     spin_unlock(buffer_lock, saved);
     return latest;
@@ -892,7 +914,8 @@ void p2000t_capture_get_stats(p2000t_capture_stats_t *stats) {
         .sample_rate_trim = sample_rate_trim,
         .horizontal_offset = horizontal_offset,
         .signal_present =
-            timing_is_locked(now, last_frame_time_us, last_frame_period_us),
+            timing_is_locked(now, last_frame_time_us, last_frame_period_us,
+                             active_capture_engine),
 #if defined(PICO_RP2350) && PICO_RP2350
         .windowed_frames = windowed_frames,
         .line_deadline_misses = line_deadline_misses,

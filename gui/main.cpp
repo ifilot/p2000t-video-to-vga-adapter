@@ -80,6 +80,11 @@ quint32 loadU32(const char *data) {
            (static_cast<quint32>(bytes[3]) << 24u);
 }
 
+quint64 loadU64(const char *data) {
+    return static_cast<quint64>(loadU32(data)) |
+           (static_cast<quint64>(loadU32(data + 4)) << 32u);
+}
+
 constexpr std::array<quint32, 256> makeCrc32Table() {
     std::array<quint32, 256> table = {};
     for (quint32 value = 0; value < table.size(); ++value) {
@@ -843,7 +848,7 @@ class CaptureWindow final : public QMainWindow {
             QStringLiteral(
                 "The Codex lab bridge is active. It accepts status, "
                 "non-persistent experiment, lossless diagnostic, explicit "
-                "save, and cancel "
+                "save, persistent factory-reset, and cancel "
                 "commands in:\n\n%1\n\n"
                 "Connection: %2\nP2000T signal: %3\nExperiment: %4")
                 .arg(QDir::toNativeSeparators(lab_bridge_.rootDirectory()),
@@ -967,7 +972,8 @@ class CaptureWindow final : public QMainWindow {
                                    "capture or configuration operation."));
                 continue;
             }
-            if (request.command == CodexLabCommand::Save) {
+            if (request.command == CodexLabCommand::Save ||
+                request.command == CodexLabCommand::FactoryReset) {
                 if (!connected_) {
                     respondToLabRequest(
                         request.id, false, QStringLiteral("unavailable"),
@@ -975,10 +981,16 @@ class CaptureWindow final : public QMainWindow {
                     continue;
                 }
                 lab_save_pending_ = true;
+                lab_factory_reset_pending_ =
+                    request.command == CodexLabCommand::FactoryReset;
                 lab_save_request_id_ = request.id;
-                if (!sendControl(
-                        makePicoControlPacket(P2000T_CONTROL_SAVE_SETTINGS))) {
+                const quint8 opcode =
+                    lab_factory_reset_pending_
+                        ? P2000T_CONTROL_FACTORY_DEFAULTS
+                        : P2000T_CONTROL_SAVE_SETTINGS;
+                if (!sendControl(makePicoControlPacket(opcode))) {
                     lab_save_pending_ = false;
+                    lab_factory_reset_pending_ = false;
                     lab_save_request_id_.clear();
                     respondToLabRequest(
                         request.id, false, QStringLiteral("unavailable"),
@@ -999,18 +1011,32 @@ class CaptureWindow final : public QMainWindow {
                     }
                     const QString id = lab_save_request_id_;
                     const bool connected = connected_;
-                    const bool saved = connected &&
-                                       configuration_.storedAvailable &&
-                                       configuration_.matchesStored &&
-                                       !configuration_.saveFailed;
+                    const bool factoryReset = lab_factory_reset_pending_;
+                    const bool knownGood =
+                        configuration_.phase ==
+                            P2000T_CONTROL_PICO2_DEFAULT_PHASE &&
+                        configuration_.oddLinePhase ==
+                            P2000T_CONTROL_PICO2_DEFAULT_ODD_LINE_PHASE &&
+                        configuration_.sampleRateTrim ==
+                            P2000T_CONTROL_DEFAULT_SAMPLE_RATE_TRIM &&
+                        configuration_.sampleReconstruction ==
+                            P2000T_CONTROL_PICO2_DEFAULT_SAMPLE_RECONSTRUCTION;
+                    const bool saved =
+                        connected && configuration_.storedAvailable &&
+                        configuration_.matchesStored &&
+                        !configuration_.saveFailed &&
+                        (!factoryReset || knownGood);
                     const bool rejected =
                         connected && configuration_.saveFailed;
                     lab_save_pending_ = false;
+                    lab_factory_reset_pending_ = false;
                     lab_save_request_id_.clear();
                     const QJsonObject extra = codexLabStatus();
                     respondToLabRequest(
                         id, saved,
-                        saved ? QStringLiteral("saved")
+                        saved ? (factoryReset
+                                     ? QStringLiteral("factory_reset")
+                                     : QStringLiteral("saved"))
                               : (connected ? QStringLiteral("save_failed")
                                            : QStringLiteral("unavailable")),
                         saved
@@ -1019,9 +1045,15 @@ class CaptureWindow final : public QMainWindow {
                                    ? QStringLiteral(
                                          "The Pico rejected the flash save.")
                                    : (connected
-                                          ? QStringLiteral(
-                                                "The Pico did not acknowledge "
-                                                "matching saved settings.")
+                                          ? (factoryReset
+                                                 ? QStringLiteral(
+                                                       "The Pico did not "
+                                                       "acknowledge the known-"
+                                                       "good saved defaults.")
+                                                 : QStringLiteral(
+                                                       "The Pico did not "
+                                                       "acknowledge matching "
+                                                       "saved settings."))
                                           : QStringLiteral(
                                                 "The Pico disconnected before "
                                                 "the save was acknowledged."))),
@@ -1220,7 +1252,21 @@ class CaptureWindow final : public QMainWindow {
             sendControl(makePicoControlPacket(P2000T_CONTROL_LOAD_SETTINGS));
         });
         connect(&dialog, &ConfigurationDialog::defaultsRequested, this, [this] {
-            sendControl(makePicoControlPacket(P2000T_CONTROL_FACTORY_DEFAULTS));
+            if (QMessageBox::question(
+                    this, QStringLiteral("Factory reset Pico"),
+                    QStringLiteral("Restore the known-good capture, palette, "
+                                   "and artwork defaults and save them to Pico "
+                                   "flash?"),
+                    QMessageBox::Yes | QMessageBox::Cancel,
+                    QMessageBox::Cancel) != QMessageBox::Yes) {
+                return;
+            }
+            if (sendControl(
+                    makePicoControlPacket(P2000T_CONTROL_FACTORY_DEFAULTS))) {
+                statusBar()->showMessage(
+                    QStringLiteral("Factory defaults restored and saved"),
+                    3000);
+            }
         });
         sendControl(makePicoControlPacket(P2000T_CONTROL_GET_SETTINGS));
         dialog.exec();
@@ -1319,7 +1365,8 @@ class CaptureWindow final : public QMainWindow {
         }
         if (lab_manifest_.isOpen()) {
             QTextStream manifest(&lab_manifest_);
-            manifest << "filename,frame_at_setting,sequence,captured_utc,"
+            manifest << "filename,frame_at_setting,sequence,"
+                        "capture_timestamp_us,received_utc,"
                         "reconstruction,capture_engine,samples_per_output,"
                         "corrected_samples,ambiguous_samples,red_corrections,"
                         "green_corrections,blue_corrections,deadline_miss\n";
@@ -1466,6 +1513,7 @@ class CaptureWindow final : public QMainWindow {
         {
             QTextStream manifest(&lab_manifest_);
             manifest << filename << ',' << imageNumber << ',' << sequence << ','
+                     << current_capture_timestamp_us_ << ','
                      << QDateTime::currentDateTimeUtc().toString(Qt::ISODate)
                      << ','
                      << reconstructionName(
@@ -1889,7 +1937,8 @@ class CaptureWindow final : public QMainWindow {
         {
             QTextStream manifest(&calibration_manifest_);
             manifest << "filename,phase,odd_line_phase,rate_trim,"
-                        "frame_at_setting,sequence,captured_utc\n";
+                        "frame_at_setting,sequence,capture_timestamp_us,"
+                        "received_utc\n";
             manifest.flush();
         }
 
@@ -2096,7 +2145,8 @@ class CaptureWindow final : public QMainWindow {
         {
             QTextStream frames(&calibration_manifest_);
             frames << "filename,stage,phase,odd_line_phase,rate_trim,"
-                      "frame_at_setting,sequence,captured_utc\n";
+                      "frame_at_setting,sequence,capture_timestamp_us,"
+                      "received_utc\n";
             frames.flush();
             QTextStream candidates(&autotune_candidates_file_);
             candidates
@@ -2479,7 +2529,8 @@ class CaptureWindow final : public QMainWindow {
             }
             manifest << calibration_phase_ << ',' << calibration_odd_line_phase_
                      << ',' << calibration_rate_trim_ << ',' << imageNumber
-                     << ',' << sequence << ','
+                     << ',' << sequence << ',' << current_capture_timestamp_us_
+                     << ','
                      << QDateTime::currentDateTimeUtc().toString(Qt::ISODate)
                      << '\n';
             manifest.flush();
@@ -3348,7 +3399,7 @@ class CaptureWindow final : public QMainWindow {
             if (magic_offset != 0) {
                 receive_buffer_.remove(0, magic_offset);
             }
-            if (receive_buffer_.size() < P2000T_STREAM_HEADER_SIZE) {
+            if (receive_buffer_.size() < P2000T_STREAM_LEGACY_HEADER_SIZE) {
                 return;
             }
 
@@ -3360,10 +3411,28 @@ class CaptureWindow final : public QMainWindow {
             const quint16 height = loadU16(&header[18]);
             const quint16 stride = loadU16(&header[20]);
             const quint16 header_size = loadU16(&header[22]);
+            const bool supported_header =
+                (version == P2000T_STREAM_LEGACY_PROTOCOL_VERSION &&
+                 header_size == P2000T_STREAM_LEGACY_HEADER_SIZE) ||
+                (version == P2000T_STREAM_PROTOCOL_VERSION &&
+                 header_size == P2000T_STREAM_HEADER_SIZE);
+            if (!supported_header) {
+                receive_buffer_.remove(0, 1);
+                continue;
+            }
+            if (receive_buffer_.size() < header_size) {
+                return;
+            }
             const quint32 payload_size = loadU32(&header[24]);
             const quint32 expected_crc = loadU32(&header[28]);
             const quint32 uncompressed_size = loadU32(&header[32]);
             const quint32 sequence = loadU32(&header[8]);
+            const quint64 capture_timestamp_us =
+                version >= P2000T_STREAM_PROTOCOL_VERSION &&
+                        (flags & P2000T_STREAM_FLAG_CAPTURE_TIMESTAMP_US) != 0u
+                    ? loadU64(
+                          &header[P2000T_STREAM_CAPTURE_TIMESTAMP_US_OFFSET])
+                    : 0u;
             const quint8 artwork =
                 static_cast<quint8>(header[P2000T_STREAM_ARTWORK_OFFSET]);
             FrameReconstructionDiagnostics frameDiagnostics;
@@ -3392,8 +3461,7 @@ class CaptureWindow final : public QMainWindow {
                 (flags & P2000T_STREAM_FLAG_CONFIGURATION_STATE) != 0u;
             if (configuration_record) {
                 const bool valid_configuration_header =
-                    version == P2000T_STREAM_PROTOCOL_VERSION &&
-                    header_size == P2000T_STREAM_HEADER_SIZE &&
+                    supported_header &&
                     payload_size == P2000T_CONFIGURATION_STATE_SIZE &&
                     uncompressed_size == P2000T_CONFIGURATION_STATE_SIZE;
                 if (!valid_configuration_header) {
@@ -3437,7 +3505,7 @@ class CaptureWindow final : public QMainWindow {
             const quint16 required_flags = P2000T_STREAM_FLAG_PLANAR_RGB111 |
                                            P2000T_STREAM_FLAG_PIXELS_MSB_FIRST;
             const bool valid =
-                version == P2000T_STREAM_PROTOCOL_VERSION &&
+                supported_header &&
                 (encoding == P2000T_STREAM_ENCODING_RAW ||
                  encoding == P2000T_STREAM_ENCODING_PACKBITS) &&
                 width == P2000T_STREAM_WIDTH &&
@@ -3477,6 +3545,7 @@ class CaptureWindow final : public QMainWindow {
             receive_buffer_.remove(0, record_size);
             if (!signal_present) {
                 current_frame_diagnostics_ = frameDiagnostics;
+                current_capture_timestamp_us_ = capture_timestamp_us;
                 presentNoConnection(artwork);
                 updateStatus(sequence, payload_size, false, artwork);
                 continue;
@@ -3502,6 +3571,7 @@ class CaptureWindow final : public QMainWindow {
             }
             presentFrame(frame);
             current_frame_diagnostics_ = frameDiagnostics;
+            current_capture_timestamp_us_ = capture_timestamp_us;
             ++frame_count_;
             updateStatus(sequence, payload_size, true, artwork);
             handleCalibrationFrame(sequence);
@@ -3563,10 +3633,11 @@ class CaptureWindow final : public QMainWindow {
         const double megabytes =
             seconds > 0.0 ? byte_count_ / seconds / 1000000.0 : 0.0;
         statusBar()->showMessage(
-            QStringLiteral("%1 | frame %2 | %3 FPS | %4 MB/s | payload %5 B | "
-                           "CRC errors %6")
+            QStringLiteral("%1 | frame %2 | Pico %3 us | %4 FPS | %5 MB/s | "
+                           "payload %6 B | CRC errors %7")
                 .arg(serial_.name())
                 .arg(sequence)
+                .arg(current_capture_timestamp_us_)
                 .arg(fps, 0, 'f', 1)
                 .arg(megabytes, 0, 'f', 2)
                 .arg(payload_size)
@@ -3630,6 +3701,7 @@ class CaptureWindow final : public QMainWindow {
     bool lab_experiment_active_ = false;
     bool lab_waiting_for_configuration_ = false;
     bool lab_save_pending_ = false;
+    bool lab_factory_reset_pending_ = false;
     CalibrationMode calibration_mode_ = CalibrationMode::ManualSweep;
     AutotuneStage autotune_stage_ = AutotuneStage::RateAndPhase;
     int calibration_phase_ = 0;
@@ -3669,6 +3741,7 @@ class CaptureWindow final : public QMainWindow {
     PicoConfiguration lab_original_configuration_;
     PicoConfiguration lab_target_configuration_;
     FrameReconstructionDiagnostics current_frame_diagnostics_;
+    quint64 current_capture_timestamp_us_ = 0;
     std::unique_ptr<EngineeringCandidateAccumulator> autotune_accumulator_;
     std::unique_ptr<EngineeringCandidateAccumulator> lab_accumulator_;
     std::vector<EngineeringCandidateResult> autotune_results_;

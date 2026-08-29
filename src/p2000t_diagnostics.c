@@ -18,8 +18,10 @@
 #include "hardware/irq.h"
 #include "hardware/pio.h"
 #include "p2000t_capture.h"
+#include "p2000t_control_protocol.h"
 #include "p2000t_diagnostic_protocol.h"
 #include "p2000t_diagnostics.pio.h"
+#include "p2000t_shared_scratch.h"
 #include "pico/stdio_usb.h"
 #include "pico/stdlib.h"
 #include "tusb.h"
@@ -50,8 +52,7 @@ typedef enum {
 } diagnostic_state_t;
 
 /** The timing trace is the largest record; raw bursts reuse the same SRAM. */
-static uint32_t diagnostic_samples[P2000T_DIAGNOSTIC_TIMING_WORD_COUNT]
-    __attribute__((aligned(4)));
+#define diagnostic_samples p2000t_high_resolution_scratch
 static uint8_t diagnostic_header[P2000T_DIAGNOSTIC_HEADER_SIZE];
 
 static diagnostic_state_t diagnostic_state;
@@ -452,7 +453,11 @@ static void service_transmit(void) {
 
 bool p2000t_diagnostics_start(unsigned start_line, unsigned line_count,
                               unsigned repetitions) {
+    p2000t_capture_stats_t capture;
+    p2000t_capture_get_stats(&capture);
     if (diagnostic_state != DIAGNOSTIC_IDLE ||
+        capture.capture_engine == P2000T_CAPTURE_ENGINE_WINDOWED ||
+        capture.engine_switch_pending ||
         start_line < P2000T_DIAGNOSTIC_MIN_START_LINE ||
         start_line > P2000T_DIAGNOSTIC_MAX_START_LINE || line_count == 0u ||
         line_count > P2000T_DIAGNOSTIC_MAX_LINES || repetitions == 0u ||

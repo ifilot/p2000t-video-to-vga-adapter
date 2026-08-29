@@ -44,6 +44,7 @@ add_executable(${FIRMWARE_TARGET}
 if(PICO_BOARD STREQUAL "pico2")
     target_sources(${FIRMWARE_TARGET} PRIVATE
         p2000t_diagnostics.c
+        p2000t_shared_scratch.c
         p2000t_usb_stream.c
     )
 endif()
@@ -107,6 +108,7 @@ if(PICO_BOARD STREQUAL "pico2")
         CFG_TUD_CDC_RX_BUFSIZE=256
         CFG_TUD_CDC_TX_BUFSIZE=4096
         CFG_TUD_CDC_EP_BUFSIZE=64
+        P2000T_WINDOW_CAPTURE_ENABLED=$<BOOL:${P2000T_WINDOW_CAPTURE_ENABLED}>
     )
 endif()
 
@@ -130,6 +132,7 @@ set_source_files_properties(
 if(PICO_BOARD STREQUAL "pico2")
     set_source_files_properties(
         p2000t_diagnostics.c
+        p2000t_shared_scratch.c
         p2000t_usb_stream.c
         PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra;-Wpedantic"
     )

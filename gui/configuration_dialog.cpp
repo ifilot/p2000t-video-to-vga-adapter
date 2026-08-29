@@ -175,7 +175,10 @@ ConfigurationDialog::ConfigurationDialog(const PicoConfiguration &configuration,
     storageLayout->addWidget(storage_status_, 1);
     reload_ = new QPushButton(QStringLiteral("Reload from Pico"), storage);
     auto *defaults =
-        new QPushButton(QStringLiteral("Factory defaults"), storage);
+        new QPushButton(QStringLiteral("Factory reset"), storage);
+    defaults->setToolTip(QStringLiteral(
+        "Restore the known-good firmware defaults and save them to Pico "
+        "flash immediately."));
     auto *save = new QPushButton(QStringLiteral("Save to Pico"), storage);
     storageLayout->addWidget(reload_);
     storageLayout->addWidget(defaults);

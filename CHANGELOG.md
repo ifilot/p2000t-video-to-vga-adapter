@@ -2,7 +2,21 @@
 
 Notable project changes are recorded here.
 
-## 0.4.0 - Unreleased
+## 0.4.1 - Unreleased
+
+- Replaced the monolithic Pico 2 six-tap decode with bounded one-line service
+  slices. Live hardware retained VGA throughout repeated 100-frame USB runs
+  with zero capture deadline misses.
+- Set the Pico 2 factory tuple to `window-late`, phase 0, physical odd-line
+  correction +1, and rate trim 0. Whole-screen validation reduced instability
+  in the title, mosaic, blue-on-white text, white-on-blue text, and footer.
+- Added a persistent USB factory reset which restores the validated capture
+  tuple, palette, and artwork and immediately replaces the flash record.
+- Added a 64-bit Pico capture-completion timestamp to USB stream protocol v4.
+  The viewer accepts legacy v3 records and records both Pico and host times.
+- Pico 1 retains its established raw phase-zero defaults.
+
+## 0.4.0 - 2026-08-29
 
 - Set the validated Pico 2 factory tuple to raw/two-tap reconstruction, phase
   -1, physical odd-line correction +1, and rate trim 0. A 100-frame validation

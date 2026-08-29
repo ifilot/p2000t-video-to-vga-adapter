@@ -23,8 +23,9 @@ trim, raw/guarded/sharp reconstruction and Pico 2 126 MHz window policies,
 plus eight RGB444 color rows with channel spinners and color pickers.
 Every edit is sent to the Pico
 immediately for live debugging. Reload from Pico retrieves the saved flash
-copy, Factory defaults restores firmware defaults, and Save to Pico writes the
-current values as a CRC-protected persistent copy. These controls require
+copy, Factory reset restores the known-good firmware defaults and immediately
+persists them, and Save to Pico writes the current values as a CRC-protected
+persistent copy. These controls require
 firmware containing the matching structured control protocol. File > Exit and
 Help > About provide the standard application menu entries.
 
@@ -35,8 +36,9 @@ change, and the number of consecutive PNGs to retain. The odd-line phase and
 source-dot reconstruction mode stay at their current values. After choosing a
 parent directory, the viewer creates a
 timestamped `p2000t-analysis-*` directory containing lossless 480x480 PNGs,
-`manifest.csv` with the requested settings and actual source-frame sequence,
-and `session.txt` with the sweep and original settings. Progress can be
+`manifest.csv` with the requested settings, actual source-frame sequence, Pico
+capture-completion timestamp, and host UTC receipt time, and `session.txt` with
+the sweep and original settings. Progress can be
 cancelled at any time; completed and cancelled sweeps restore the original
 phase, odd-line phase, and rate trim. Partial images and the manifest are kept
 when a sweep is cancelled or a write fails. The viewer remembers the last
@@ -72,6 +74,10 @@ the current live tuple to Pico flash and waits for a matching stored-state
 acknowledgement. Each run saves the request, exact frames and sequences, modal
 image, spatial/temporal metrics, firmware correction counters, and result JSON. See
 [the Codex lab guide](../docs/codex-lab.md).
+
+USB stream protocol v4 carries a 64-bit Pico monotonic capture-completion
+timestamp. The viewer accepts both v4/72-byte and legacy v3/64-byte headers and
+shows the current device timestamp in its status bar.
 
 The firmware command `c` starts the recommended PackBits stream, `r` starts a
 raw stream, and `q` returns it to the normal USB console. Streaming is currently
@@ -132,7 +138,7 @@ preparing a self-contained deployment directory:
 
 ```powershell
 gui/packaging/create_windows_installer.ps1 `
-  -Stage dist/viewer -Version 0.4.0 `
+  -Stage dist/viewer -Version 0.4.1 `
   -Output dist/p2000t-vid2vga-capture-windows-setup.exe `
   -WorkDirectory installer-work
 ```

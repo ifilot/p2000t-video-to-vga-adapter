@@ -65,6 +65,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_common(save)
 
+    factory_reset = subparsers.add_parser(
+        "factory-reset",
+        help="restore and persist the firmware's known-good defaults",
+    )
+    add_common(factory_reset)
+
     cancel = subparsers.add_parser("cancel", help="cancel the active experiment")
     add_common(cancel)
 
