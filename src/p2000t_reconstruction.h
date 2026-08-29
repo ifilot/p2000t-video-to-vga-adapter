@@ -157,6 +157,55 @@ static inline uint32_t p2000t_reconstruct_window_group(
         first_word, second_word, third_word, lookup, diagnostics, NULL);
 }
 
+/**
+ * @brief Reconstruct a group without the 64 KiB line-rate lookup tables.
+ *
+ * Keeping the lookup tables in SRAM makes the capture IRQ and VGA renderer
+ * contend for the same memory fabric on every scanline. Direct reconstruction
+ * trades a few integer operations for predictable VGA scanout and much lower
+ * SRAM pressure.
+ */
+static inline uint32_t p2000t_reconstruct_window_group_direct(
+    uint32_t first_word, uint32_t second_word, uint32_t third_word,
+    p2000t_window_policy_t policy,
+    p2000t_reconstruction_diagnostics_t *diagnostics, uint8_t *uncertain_mask,
+    unsigned red_channel, unsigned green_channel, unsigned blue_channel) {
+    const uint16_t triplets[8] = {
+        (uint16_t)(first_word >> 20u),
+        (uint16_t)((first_word >> 8u) & 0x0fffu),
+        (uint16_t)(((first_word & 0x00ffu) << 4u) | (second_word >> 28u)),
+        (uint16_t)((second_word >> 16u) & 0x0fffu),
+        (uint16_t)((second_word >> 4u) & 0x0fffu),
+        (uint16_t)(((second_word & 0x000fu) << 8u) | (third_word >> 24u)),
+        (uint16_t)((third_word >> 12u) & 0x0fffu),
+        (uint16_t)(third_word & 0x0fffu),
+    };
+    uint32_t output = 0u;
+    uint32_t packed_diagnostics = 0u;
+    uint8_t uncertainty = 0u;
+    for (unsigned index = 0; index < 8u; ++index) {
+        const uint8_t first = (uint8_t)(triplets[index] >> 8u);
+        const uint8_t center = (uint8_t)(triplets[index] >> 4u) & 0x0fu;
+        const uint8_t last = (uint8_t)triplets[index] & 0x0fu;
+        const uint32_t entry = p2000t_window_lookup_entry(
+            first, center, last, policy, red_channel, green_channel,
+            blue_channel);
+        output = (output << 4u) | (entry & P2000T_WINDOW_ENTRY_OUTPUT_MASK);
+        packed_diagnostics += entry >> P2000T_WINDOW_ENTRY_DIAGNOSTICS_SHIFT;
+        uncertainty = (uint8_t)((uncertainty << 1u) |
+                                (first != center || center != last));
+    }
+    diagnostics->corrected_samples += packed_diagnostics & 0x0fu;
+    diagnostics->ambiguous_samples += (packed_diagnostics >> 4u) & 0x0fu;
+    diagnostics->red_corrections += (packed_diagnostics >> 8u) & 0x0fu;
+    diagnostics->green_corrections += (packed_diagnostics >> 12u) & 0x0fu;
+    diagnostics->blue_corrections += (packed_diagnostics >> 16u) & 0x0fu;
+    if (uncertain_mask != NULL) {
+        *uncertain_mask = uncertainty;
+    }
+    return output;
+}
+
 /** Return one chronological four-bit sample from a packed capture word. */
 static inline uint8_t p2000t_packed_sample(uint32_t word, unsigned sample) {
     return (uint8_t)(word >> (28u - sample * 4u)) & 0x0fu;

@@ -1227,20 +1227,31 @@ int main(void) {
         current_settings = stored_settings;
         current_reconstruction_mode = stored_reconstruction_mode;
     }
+    /* Older experimental records may request the line-rate six-tap engine.
+       It can starve continuous VGA scanout even while capture remains locked.
+       Migrate those records to the safe two-tap renderer at boot. */
+    if (!P2000T_CAPTURE_WINDOW_REALTIME_SAFE &&
+        current_reconstruction_mode >=
+            P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_FIRST) {
+        current_reconstruction_mode =
+            P2000T_CONTROL_DEFAULT_SAMPLE_RECONSTRUCTION;
+    }
     p2000t_video_renderer_initialize();
     p2000t_video_renderer_set_source_palette(current_settings.palette);
     select_sample_reconstruction(current_reconstruction_mode, true);
 
 #if defined(PICO_RP2350) && PICO_RP2350
-    const bool defer_confidence_guard =
-        current_reconstruction_mode ==
-        P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_CONFIDENCE_GUARD;
-    if (defer_confidence_guard) {
-        /* Start the same six-tap DMA engine with its lightweight center
-           policy. Once VGA startup is complete, confidence is adopted at a
-           frame boundary without reconfiguring the ping-pong channels. */
+    const bool defer_window_engine =
+        current_reconstruction_mode >=
+        P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_FIRST;
+    if (defer_window_engine) {
+        /* Always bootstrap through the proven full-frame two-tap engine.
+           Starting directly in the line-rate ping-pong engine can leave it
+           waiting for a completion that occurred before its IRQ was ready.
+           A completed two-tap frame then performs the normal, frame-boundary
+           transition into the requested window mode. */
         hard_assert(p2000t_capture_set_reconstruction_mode(
-            P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_CENTER));
+            P2000T_CONTROL_SAMPLE_RECONSTRUCTION_RAW));
     }
 #endif
 
@@ -1265,7 +1276,7 @@ int main(void) {
     }
     scanvideo_timing_enable(true);
 #if defined(PICO_RP2350) && PICO_RP2350
-    if (defer_confidence_guard) {
+    if (defer_window_engine) {
         hard_assert(p2000t_capture_set_reconstruction_mode(
             current_reconstruction_mode));
     }

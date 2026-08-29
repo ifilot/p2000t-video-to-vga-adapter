@@ -81,8 +81,6 @@ enum {
     WINDOW_SAMPLES_PER_SOURCE_DOT = 2 * WINDOW_SAMPLES_PER_OUTPUT,
     WINDOW_SAMPLES_PER_LINE = P2000T_CAPTURE_WIDTH * WINDOW_SAMPLES_PER_OUTPUT,
     WINDOW_WORDS_PER_LINE = WINDOW_SAMPLES_PER_LINE / 8,
-    WINDOW_LOOKUP_SIZE = 4096,
-    WINDOW_POLICY_COUNT = 4,
     WINDOW_CENTER_ALIGNMENT_TICKS = 4,
 /**< Extra start delay aligning window centers to normal ticks 6 and 16. */
 #endif
@@ -145,9 +143,6 @@ static p2000t_reconstruction_diagnostics_t
 /** Two raw line buffers let DMA capture one line while the IRQ decodes one. */
 static uint32_t window_line_buffers[2][WINDOW_WORDS_PER_LINE]
     __attribute__((aligned(4)));
-
-/** Prebuilt policies avoid table construction inside a frame-boundary IRQ. */
-static uint32_t window_lookup_tables[WINDOW_POLICY_COUNT][WINDOW_LOOKUP_SIZE];
 
 /** Evidence accumulated while the current six-tap frame is being decoded. */
 static p2000t_reconstruction_diagnostics_t current_window_diagnostics;
@@ -260,20 +255,6 @@ static bool sequence_is_newer(uint32_t candidate, uint32_t reference) {
 static bool reconstruction_uses_window(unsigned reconstruction) {
     return reconstruction >= P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_FIRST;
 }
-
-#if defined(PICO_RP2350) && PICO_RP2350
-/** Build all policies once before line-rate interrupts are enabled. */
-static void initialize_window_lookup_tables(void) {
-    for (unsigned policy = 0; policy < WINDOW_POLICY_COUNT; ++policy) {
-        for (unsigned packed = 0; packed < WINDOW_LOOKUP_SIZE; ++packed) {
-            window_lookup_tables[policy][packed] = p2000t_window_lookup_entry(
-                (uint8_t)(packed >> 8u), (uint8_t)(packed >> 4u),
-                (uint8_t)packed, (p2000t_window_policy_t)policy,
-                P2000T_RED_CHANNEL, P2000T_GREEN_CHANNEL, P2000T_BLUE_CHANNEL);
-        }
-    }
-}
-#endif
 
 /**
  * @brief Keep the first sample anchored while changing the PIO divider.
@@ -490,15 +471,14 @@ static void __not_in_flash_func(reconstruct_window_line)(
     bool apply_confidence_guard) {
     if (active_reconstruction_mode ==
         P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_CONFIDENCE_GUARD) {
-        const uint32_t *lookup =
-            window_lookup_tables[P2000T_WINDOW_POLICY_COLOR_LATE];
         if (!apply_confidence_guard) {
             for (unsigned group = 0; group < P2000T_CAPTURE_WORDS_PER_LINE;
                  ++group) {
-                destination[group] = p2000t_reconstruct_window_group(
+                destination[group] = p2000t_reconstruct_window_group_direct(
                     source[group * 3u], source[group * 3u + 1u],
-                    source[group * 3u + 2u], lookup,
-                    &current_window_diagnostics);
+                    source[group * 3u + 2u], P2000T_WINDOW_POLICY_COLOR_LATE,
+                    &current_window_diagnostics, NULL, P2000T_RED_CHANNEL,
+                    P2000T_GREEN_CHANNEL, P2000T_BLUE_CHANNEL);
             }
             return;
         }
@@ -506,10 +486,12 @@ static void __not_in_flash_func(reconstruct_window_line)(
              ++group) {
             uint8_t uncertainty = 0u;
             uint32_t reconstructed =
-                p2000t_reconstruct_window_group_with_evidence(
+                p2000t_reconstruct_window_group_direct(
                     source[group * 3u], source[group * 3u + 1u],
-                    source[group * 3u + 2u], lookup,
-                    &current_window_diagnostics, &uncertainty);
+                    source[group * 3u + 2u], P2000T_WINDOW_POLICY_COLOR_LATE,
+                    &current_window_diagnostics, &uncertainty,
+                    P2000T_RED_CHANNEL, P2000T_GREEN_CHANNEL,
+                    P2000T_BLUE_CHANNEL);
             reconstructed =
                 p2000t_guard_uncertain_pairs(reconstructed, uncertainty);
             destination[group] = reconstructed;
@@ -519,11 +501,11 @@ static void __not_in_flash_func(reconstruct_window_line)(
     const p2000t_window_policy_t policy =
         (p2000t_window_policy_t)(active_reconstruction_mode -
                                  P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_FIRST);
-    const uint32_t *lookup = window_lookup_tables[policy];
     for (unsigned group = 0; group < P2000T_CAPTURE_WORDS_PER_LINE; ++group) {
-        destination[group] = p2000t_reconstruct_window_group(
+        destination[group] = p2000t_reconstruct_window_group_direct(
             source[group * 3u], source[group * 3u + 1u],
-            source[group * 3u + 2u], lookup, &current_window_diagnostics);
+            source[group * 3u + 2u], policy, &current_window_diagnostics, NULL,
+            P2000T_RED_CHANNEL, P2000T_GREEN_CHANNEL, P2000T_BLUE_CHANNEL);
     }
 }
 
@@ -759,9 +741,6 @@ void p2000t_capture_start(void) {
                                 P2000T_BLUE_PIN, "P2000T BLUE_IN"));
 
     buffer_lock = spin_lock_instance((unsigned)spin_lock_claim_unused(true));
-#if defined(PICO_RP2350) && PICO_RP2350
-    initialize_window_lookup_tables();
-#endif
     active_reconstruction_mode = requested_reconstruction_mode;
     active_capture_engine =
         reconstruction_uses_window(active_reconstruction_mode)
@@ -805,12 +784,6 @@ void p2000t_capture_pause_for_flash(void) {
 
 void p2000t_capture_resume_after_flash(void) {
     hard_assert(capture_started);
-#if defined(PICO_RP2350) && PICO_RP2350
-    /* Rebuilding the deterministic tables while DMA is stopped repairs stale
-       state left by an earlier capture transaction and makes the restart
-       independent of the interrupted frame. */
-    initialize_window_lookup_tables();
-#endif
     configure_capture_engine();
     update_tx_commands();
     apply_sample_rate_trim();
@@ -928,7 +901,7 @@ void p2000t_capture_get_stats(p2000t_capture_stats_t *stats) {
         .last_red_corrections = last_window_diagnostics.red_corrections,
         .last_green_corrections = last_window_diagnostics.green_corrections,
         .last_blue_corrections = last_window_diagnostics.blue_corrections,
-        .window_supported = true,
+        .window_supported = P2000T_CAPTURE_WINDOW_REALTIME_SAFE != 0,
 #else
         .window_supported = false,
 #endif
@@ -1000,11 +973,10 @@ bool p2000t_capture_set_reconstruction_mode(unsigned reconstruction) {
     if (reconstruction >= P2000T_CONTROL_SAMPLE_RECONSTRUCTION_COUNT) {
         return false;
     }
-#if !defined(PICO_RP2350) || !PICO_RP2350
-    if (reconstruction_uses_window(reconstruction)) {
+    if (reconstruction_uses_window(reconstruction) &&
+        !P2000T_CAPTURE_WINDOW_REALTIME_SAFE) {
         return false;
     }
-#endif
     if (!capture_started) {
         requested_reconstruction_mode = reconstruction;
         active_reconstruction_mode = reconstruction;

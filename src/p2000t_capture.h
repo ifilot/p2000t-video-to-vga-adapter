@@ -18,6 +18,10 @@
 
 /** Capture geometry, adjustment limits, and conditioned input pin mapping. */
 enum {
+    /* Six-tap line reconstruction currently starves continuous VGA scanout.
+       Keep it unavailable until reconstruction is moved out of the line-rate
+       IRQ path. */
+    P2000T_CAPTURE_WINDOW_REALTIME_SAFE = 0,
     P2000T_CAPTURE_WIDTH = 480,
     /**< Raw samples per line; two per nominal 6 MHz source dot. */
     P2000T_CAPTURE_HEIGHT = 240,

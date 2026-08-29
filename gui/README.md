@@ -132,7 +132,7 @@ preparing a self-contained deployment directory:
 
 ```powershell
 gui/packaging/create_windows_installer.ps1 `
-  -Stage dist/viewer -Version 0.4.1 `
+  -Stage dist/viewer -Version 0.4.0 `
   -Output dist/p2000t-vid2vga-capture-windows-setup.exe `
   -WorkDirectory installer-work
 ```

@@ -7,8 +7,26 @@
 #include <cstdio>
 
 #include "p2000t_reconstruction.h"
+#include "p2000t_palette.h"
 
 int main() {
+    {
+        uint16_t colors[P2000T_CONTROL_PALETTE_COLORS] = {};
+        if (p2000t_palette_has_visible_source_color(colors)) {
+            std::fputs("All-black palette was accepted\n", stderr);
+            return 1;
+        }
+        colors[0] = 0x0fffu;
+        if (p2000t_palette_has_visible_source_color(colors)) {
+            std::fputs("Background-only palette was accepted\n", stderr);
+            return 1;
+        }
+        colors[7] = 0x0001u;
+        if (!p2000t_palette_has_visible_source_color(colors)) {
+            std::fputs("Visible source palette was rejected\n", stderr);
+            return 1;
+        }
+    }
     for (std::uint8_t first = 0; first < 16u; ++first) {
         for (std::uint8_t second = 0; second < 16u; ++second) {
             for (std::uint8_t next = 0; next < 16u; ++next) {
@@ -115,6 +133,26 @@ int main() {
                      "Packed window reconstruction failed: %08x, %u/%u/%02x\n",
                      reconstructed, diagnostics.corrected_samples,
                      diagnostics.ambiguous_samples, uncertainty);
+        return 1;
+    }
+    p2000t_reconstruction_diagnostics_t directDiagnostics = {};
+    std::uint8_t directUncertainty = 0u;
+    const std::uint32_t direct = p2000t_reconstruct_window_group_direct(
+        packedWords[0], packedWords[1], packedWords[2],
+        P2000T_WINDOW_POLICY_COLOR_EARLY, &directDiagnostics,
+        &directUncertainty, 0u, 1u, 2u);
+    if (direct != reconstructed ||
+        directDiagnostics.corrected_samples !=
+            diagnostics.corrected_samples ||
+        directDiagnostics.ambiguous_samples !=
+            diagnostics.ambiguous_samples ||
+        directDiagnostics.red_corrections != diagnostics.red_corrections ||
+        directDiagnostics.green_corrections !=
+            diagnostics.green_corrections ||
+        directDiagnostics.blue_corrections != diagnostics.blue_corrections ||
+        directUncertainty != uncertainty) {
+        std::fputs("Direct window reconstruction differs from lookup\n",
+                   stderr);
         return 1;
     }
 

@@ -21,11 +21,11 @@ void require(bool condition, const char *message) {
 } // namespace
 
 int main() {
-    static_assert(P2000T_CONTROL_PICO2_DEFAULT_PHASE == 0);
+    static_assert(P2000T_CONTROL_PICO2_DEFAULT_PHASE == -1);
     static_assert(P2000T_CONTROL_PICO2_DEFAULT_ODD_LINE_PHASE == 1);
     static_assert(
         P2000T_CONTROL_PICO2_DEFAULT_SAMPLE_RECONSTRUCTION ==
-        P2000T_CONTROL_SAMPLE_RECONSTRUCTION_WINDOW_CONFIDENCE_GUARD);
+        P2000T_CONTROL_SAMPLE_RECONSTRUCTION_RAW);
 
     CodexLabRequest request;
     QString error;

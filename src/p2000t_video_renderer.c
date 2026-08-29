@@ -17,6 +17,7 @@
 #include "p2000t_capture.h"
 #include "p2000t_control_protocol.h"
 #include "p2000t_no_signal_layout.h"
+#include "p2000t_palette.h"
 #include "p2000t_reconstruction.h"
 #include "pico/scanvideo/composable_scanline.h"
 #include "pico/stdlib.h"
@@ -259,6 +260,12 @@ void p2000t_video_renderer_initialize(void) {
 
 void p2000t_video_renderer_set_source_palette(const uint16_t colors[8]) {
     hard_assert(colors != NULL);
+    /* Never turn a healthy source frame into an undiagnosable black screen.
+       Persistence rejects the same state, but this fallback also protects
+       live host transactions before they are saved. */
+    const uint16_t *effective_colors =
+        p2000t_palette_has_visible_source_color(colors) ? colors
+                                                        : default_source_colors;
     const uint32_t active =
         __atomic_load_n(&active_raw_color_table, __ATOMIC_ACQUIRE);
     const uint32_t requested =
@@ -268,7 +275,7 @@ void p2000t_video_renderer_set_source_palette(const uint16_t colors[8]) {
         ++next;
     }
     hard_assert(next < 3u);
-    build_source_color_tables(raw_byte_color_tables[next], colors);
+    build_source_color_tables(raw_byte_color_tables[next], effective_colors);
     __atomic_store_n(&requested_raw_color_table, next, __ATOMIC_RELEASE);
 }
 

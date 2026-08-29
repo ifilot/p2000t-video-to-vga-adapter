@@ -44,7 +44,7 @@ if(NOT PICO_EXTRAS_PATH)
 endif()
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/pico_extras_import.cmake")
 
-project(p2000t_vid2vga_firmware VERSION 0.4.1 LANGUAGES C CXX ASM)
+project(p2000t_vid2vga_firmware VERSION 0.4.0 LANGUAGES C CXX ASM)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)

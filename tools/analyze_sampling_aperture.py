@@ -36,12 +36,14 @@ def color_late(first, center, last):
 
 
 def reconstruct_line(samples, origin, start, offsets, tick_scale,
-                     confidence_guard, guard_rule):
+                     confidence_guard, guard_rule, clock_ppm=0.0):
     output = []
     uncertain = []
     for x in range(480):
-        center = (origin + start + (x // 2) * 21 * tick_scale +
-                  (0 if x % 2 == 0 else 10 * tick_scale) + tick_scale)
+        progress = ((x // 2) * 21 * tick_scale +
+                    (0 if x % 2 == 0 else 10 * tick_scale) + tick_scale)
+        progress = round(progress * 1_000_000 / (1_000_000 + clock_ppm))
+        center = origin + start + progress
         window = [samples[center + offset] for offset in offsets]
         output.append(color_late(*window))
         uncertain.append(
@@ -80,7 +82,13 @@ def main():
                         help="report the N most unstable baseline pixels")
     parser.add_argument("--guard-rule", choices=("any", "ambiguous", "late"),
                         default="any")
+    parser.add_argument("--clock-ppm", type=float, default=0.0,
+                        help="faster candidate sampling clock in ppm; "
+                             "--start-tick independently sets the fixed "
+                             "sync-to-first-sample phase")
     arguments = parser.parse_args()
+    if arguments.clock_ppm <= -1_000_000.0:
+        parser.error("--clock-ppm must be greater than -1000000")
 
     capture = arguments.session / "capture.p2td" if arguments.session.is_dir() else arguments.session
     records = [record for record in read_records(capture)
@@ -137,7 +145,8 @@ def main():
                 frame.extend(reconstruct_line(samples, origins[offset], start,
                                               offsets, tick_scale,
                                               bool(logical & 1),
-                                              arguments.guard_rule))
+                                              arguments.guard_rule,
+                                              arguments.clock_ppm))
             candidates[name].append(frame)
 
     baseline_modal = modal_frame(candidates[f"spacing-{spacings[0]}"])
@@ -204,9 +213,16 @@ def main():
                     origin = origins[physical - first_physical]
                     parts = []
                     for x in (site["x"] & ~1, site["x"] | 1):
-                        center = (origin + start + (x // 2) * 21 * tick_scale +
-                                  (0 if x % 2 == 0 else 10 * tick_scale) +
-                                  tick_scale)
+                        progress = (
+                            (x // 2) * 21 * tick_scale +
+                            (0 if x % 2 == 0 else 10 * tick_scale) +
+                            tick_scale
+                        )
+                        progress = round(
+                            progress * 1_000_000 /
+                            (1_000_000 + arguments.clock_ppm)
+                        )
+                        center = origin + start + progress
                         triplet = tuple(samples[center + value]
                                         for value in aperture)
                         parts.append("".join(f"{value:x}" for value in triplet))

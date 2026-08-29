@@ -54,13 +54,17 @@ rows, which correspond to physical even P2000T lines at the default first
 visible line 57. The ordinary late policy remains active on logical even rows;
 changing the first visible line also shifts this physical mapping.
 
-Version 0.4.0 introduced the complete reconstruction-mode flash record while
-continuing to read v0.3.x records. Version 0.4.1 promotes the validated
-`window-confidence`, phase 0, odd-line correction +1, and rate trim 0 tuple to
-the Pico 2 factory default. Existing saved settings remain authoritative. The
-original Pico retains raw reconstruction and phase-zero defaults. A mode switch
-is adopted only after the current source frame completes, so no captured frame
-is split between PIO programs or policies. When confidence is the power-on
-mode, Pico 2 starts the same six-tap engine with the lightweight center policy
-and adopts confidence at a frame boundary after VGA startup; the DMA engine is
-not reconfigured during this transition.
+Version 0.4.0 introduces the complete reconstruction-mode flash record while
+continuing to read v0.3.x records. Hardware validation found that both the
+lookup-based and direct line-rate six-tap reconstruction paths can starve the
+independent VGA core's SRAM access: capture remains locked and USB frames are
+correct, but the monitor receives black source scanlines. Continuous window
+modes are therefore disabled in the stable v0.4.0 build. A saved experimental
+window selection is migrated at boot to the validated raw tuple: phase -1,
+odd-line correction +1, and rate trim 0. The original Pico retains raw
+reconstruction and phase-zero defaults.
+
+The window policies and diagnostic telemetry remain in the source tree as an
+engineering basis for a future frame-batched or otherwise contention-free
+implementation. They must not be re-enabled in the line-rate IRQ path without
+simultaneously validating uninterrupted VGA output.

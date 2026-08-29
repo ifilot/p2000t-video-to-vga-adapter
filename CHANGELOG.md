@@ -2,20 +2,19 @@
 
 Notable project changes are recorded here.
 
-## 0.4.1 - 2026-08-29
+## 0.4.0 - Unreleased
 
-- Promoted the parity-aware `window-confidence` policy to the Pico 2 factory
-  default with phase 0, physical odd-line correction +1, and rate trim 0.
-  Existing saved settings remain authoritative and flash-compatible.
-- The confidence guard trusts a paired half-dot only when its three samples are
-  unanimous and the other half is uncertain. On the default viewport it guards
-  physical even source lines and preserves two unanimous but different colors
-  as a genuine edge.
-- On boot, Pico 2 starts the six-tap engine with its lightweight center policy
-  and adopts the confidence policy at a frame boundary after VGA startup. This
-  avoids reconfiguring DMA and keeps the validated live-transition behavior.
-- Raised the capture DMA interrupt priority to keep six-tap reconstruction
-  ahead of the next scanline deadline during startup and sustained capture.
+- Set the validated Pico 2 factory tuple to raw/two-tap reconstruction, phase
+  -1, physical odd-line correction +1, and rate trim 0. A 100-frame validation
+  retained sharp geometry while reducing robust temporal instability by about
+  80% relative to phase 0 on the current test screen.
+- Disabled continuous six-tap window reconstruction after hardware validation
+  proved that its line-rate SRAM traffic can starve VGA scanout even while USB
+  capture remains correct. Experimental saved window selections are migrated
+  safely to raw on boot.
+- Reject all-black saved palettes and substitute the firmware palette for an
+  all-black live palette, preventing valid captured frames from being rendered
+  as an undiagnosable black source image.
 - Added reference-modal erased/filled/recolored pixel diagnostics and robust
   temporal logging which separates coherent high-change frames from the
   ordinary instability total.
@@ -27,15 +26,14 @@ Notable project changes are recorded here.
   sampling-aperture analyzer for comparing reconstructed output against a
   captured reference image.
 
-## 0.4.0 - 2026-08-28
-
 - Added a frame-boundary-switchable Pico 2 capture engine which records two
   three-tick 126 MHz windows per source dot into ping-pong scanline buffers and
   reconstructs the normal 480x240 framebuffer without another full-frame
-  allocation.
+  allocation. This remains engineering code and is not exposed by the stable
+  build until its VGA memory contention is eliminated.
 - Added sharp guarded reconstruction plus window-center, per-channel majority,
-  atomic-early, and atomic-late policies. Pico 2 now defaults to the balanced
-  window-center timing selected across the caption and engineering test pages.
+  atomic-early, atomic-late, and parity-aware confidence policies for measured
+  engineering experiments. Stable Pico 2 operation defaults to raw.
 - Extended the CRC-protected flash record to persist every reconstruction mode
   while retaining read compatibility with v0.3.x settings records.
 - Added exact per-frame reconstruction telemetry to the USB stream and Codex
@@ -97,10 +95,9 @@ Notable project changes are recorded here.
 - Calibration sweeps now request an explicit complete setting state, retry a
   missing acknowledgement with a bounded timeout, report mismatched values,
   and remember the last selected analysis parent directory.
-- Capture PIO and DMA are quiesced before a flash settings write, window lookup
-  state is rebuilt while DMA remains stopped, and acquisition restarts at a
-  clean frame boundary. This prevents flash-safe interrupt pauses from
-  corrupting window-center reconstruction or stopping capture.
+- Capture PIO and DMA are quiesced before a flash settings write, and
+  acquisition restarts at a clean frame boundary. This prevents flash-safe
+  interrupt pauses from corrupting or stopping capture.
 - Capture-buffer ownership now permits a short-lived Pico 2 USB reader without
   exposing a buffer that DMA may overwrite or changing the Pico/RP2040 memory
   footprint.

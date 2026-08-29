@@ -111,10 +111,12 @@ valid for image-quality comparison and should be investigated as a real-time
 capture failure.
 
 Bridge experiments remain non-persistent. Flash is changed only by an explicit
-`save` command or the ordinary configuration UI, both of which can save every
-reconstruction mode in v0.4.1. Pico 2 uses `window-confidence`, phase 0,
+`save` command or the ordinary configuration UI, both of which save supported
+reconstruction modes in v0.4.0. Pico 2 uses raw reconstruction, phase -1,
 odd-line +1, and rate trim 0 as its power-on and factory default when no valid
-saved record is present; the original Pico retains raw phase-zero defaults.
+saved record is present. Continuous window modes remain unavailable until
+their line-rate reconstruction no longer starves VGA scanout; the original
+Pico retains raw phase-zero defaults.
 
 The transport test can run without hardware: a `status` request still returns
 viewer state, while an experiment is explicitly rejected as unavailable when

@@ -5,6 +5,8 @@
 
 #include "p2000t_settings.h"
 
+#include "p2000t_palette.h"
+
 #include <stddef.h>
 #include <string.h>
 
@@ -129,7 +131,7 @@ void p2000t_settings_defaults(p2000t_settings_t *settings,
 #if defined(PICO_RP2350) && PICO_RP2350
     settings->sample_phase = P2000T_CONTROL_PICO2_DEFAULT_PHASE;
     settings->odd_line_phase = P2000T_CONTROL_PICO2_DEFAULT_ODD_LINE_PHASE;
-    *reconstruction = P2000T_CONTROL_PICO2_DEFAULT_SAMPLE_RECONSTRUCTION;
+    *reconstruction = P2000T_CONTROL_DEFAULT_SAMPLE_RECONSTRUCTION;
 #else
     settings->sample_phase = P2000T_CONTROL_DEFAULT_PHASE;
     settings->odd_line_phase = P2000T_CONTROL_DEFAULT_ODD_LINE_PHASE;
@@ -168,7 +170,12 @@ bool p2000t_settings_valid(const p2000t_settings_t *settings) {
             return false;
         }
     }
-    return true;
+    /* A completely black source palette makes a valid captured image
+       indistinguishable from failed VGA scanout. It can be produced by an
+       incomplete host-side configuration transaction, but is never a useful
+       persisted display configuration. Reject it so boot falls back to the
+       firmware defaults. */
+    return p2000t_palette_has_visible_source_color(settings->palette);
 }
 
 bool p2000t_settings_load(p2000t_settings_t *settings,
